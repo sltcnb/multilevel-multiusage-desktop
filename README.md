@@ -28,16 +28,9 @@ Entra enrollment supports; the other two can be whatever you like.
 
 The bar across the top is the "trust bar": it's always visible and the highlighted
 workspace number tells you which environment is currently active, so you can never
-confuse one world for another. Below it, the active VM fills the screen, and
-`Super+1/2/3` swaps which one is shown.
-
-![the kiosk desktop with the trust bar and the three environments](docs/img/kiosk.png)
-
-> This shot is the appliance booted in an emulator, which has no hardware
-> virtualization, so the panes read "Waiting for guest domain" rather than a live
-> desktop. On real hardware each workspace is the full desktop of its VM. The
-> screenshot is here to show the real thing: the trust bar pinned at the top
-> (workspace 1 active) and one full-screen environment per workspace.
+confuse one world for another. Below it, the active VM's desktop fills the screen,
+and `Super+1/2/3` swaps which one is shown — instantly, on the same physical
+display.
 
 ## How the isolation works
 
@@ -279,13 +272,13 @@ safe to re-run.
 
 ## How the automated install of guests works
 
-Both Ubuntu and Arch publish official **cloud images** — qcow2 files that already
-contain cloud-init. The appliance boots one of these, hands it a small NoCloud
-seed ISO with the user and package configuration, and cloud-init provisions the
-guest unattended on first boot. Using the same mechanism for every guest keeps
-one uniform, reliable provisioning path. (Arch has no official unattended
-installer otherwise; scripting `pacstrap` from the ISO is possible but brittle,
-so the cloud image is the better choice.)
+Ubuntu, Arch and Debian all publish official **cloud images** — qcow2 files that
+already contain cloud-init. The appliance boots one of these, hands it a small
+NoCloud seed ISO with the user and package configuration, and cloud-init
+provisions the guest unattended on first boot. Every guest OS goes through the
+exact same path, which keeps provisioning uniform and reliable. (Arch has no
+official unattended installer otherwise; scripting `pacstrap` from the ISO is
+possible but brittle, so the cloud image is the better choice there too.)
 
 ## Per-environment VPN
 
@@ -306,52 +299,27 @@ WireGuard peer.
 ## Alignment with ANSSI-PA-114
 
 The appliance targets ANSSI's guidance for securing a multi-environment
-workstation. Status: **OK** = met, **Partial** = mechanism present but opt-in or
-dependent on a firmware/hardware setting.
+workstation. Status: **Built-in** = enforced by default, **Opt-in** = supported
+but you enable it (sometimes with a firmware/hardware setting).
 
 | Requirement | Status | How it's met |
 |-------------|--------|--------------|
-| One environment per VM (preferred over sandboxes) | OK | each environment is its own KVM VM |
-| Hardened host, minimal trusted base | OK | minimal Alpine, no user apps; `host/harden.sh` sysctl hardening + optional host firewall |
-| Desktop runs unprivileged | OK | autologin an unprivileged `kiosk` user; root reserved for tty2 |
-| Always know the active environment | OK | the always-visible, color-coded trust bar |
-| Network isolation, no impersonation between environments | OK | separate bridge + subnet per env, nftables all-pairs drop |
-| Per-environment outbound control | OK | `<env>_EGRESS_MODE=whitelist` |
-| Peripheral compartmentalization (USB) | OK | usbguard default-deny; whitelist with `host/usb-allow.sh`; YubiKey routed to one VM |
-| No secrets left at rest | OK | `environments/scrub-secrets.sh` blanks passwords/keys after setup |
-| Memory encryption (anti cold-boot) | Partial | `mem_encrypt=on` set; full DRAM encryption needs TSME enabled in firmware |
-| Disk encryption | Partial | LUKS2 via `ENCRYPT=1`; key auto-generated if none supplied |
-| Per-environment user-keyed encryption | Partial | per-VM LUKS via `<env>_ENCRYPT_DISK=1` + `<env>_DISK_PASS` |
-| Dedicated non-bypassable VPN per environment | Partial | host-enforced WireGuard via `<env>_VPN=1` + `environments/vpn.sh` |
-| Secure/measured boot + TPM | Partial | `host/secure-boot.sh` (Secure Boot + TPM PCR bind) + `host/tpm-initramfs-hook.sh` |
+| One environment per VM (preferred over sandboxes) | Built-in | each environment is its own KVM VM |
+| Hardened host, minimal trusted base | Built-in | minimal Alpine, no user apps; `host/harden.sh` sysctl hardening + optional host firewall |
+| Desktop runs unprivileged | Built-in | autologin an unprivileged `kiosk` user; root reserved for tty2 |
+| Always know the active environment | Built-in | the always-visible, color-coded trust bar |
+| Network isolation, no impersonation between environments | Built-in | separate bridge + subnet per env, nftables all-pairs drop |
+| Per-environment outbound control | Built-in | `<env>_EGRESS_MODE=whitelist` |
+| Peripheral compartmentalization (USB) | Built-in | usbguard default-deny; whitelist with `host/usb-allow.sh`; YubiKey routed to one VM |
+| No secrets left at rest | Built-in | `environments/scrub-secrets.sh` blanks passwords/keys after setup |
+| Memory encryption (anti cold-boot) | Opt-in | `mem_encrypt=on` set; full DRAM encryption needs TSME enabled in firmware |
+| Disk encryption | Opt-in | LUKS2 via `ENCRYPT=1`; key auto-generated if none supplied |
+| Per-environment user-keyed encryption | Opt-in | per-VM LUKS via `<env>_ENCRYPT_DISK=1` + `<env>_DISK_PASS` |
+| Dedicated non-bypassable VPN per environment | Opt-in | host-enforced WireGuard via `<env>_VPN=1` + `environments/vpn.sh` |
+| Secure/measured boot + TPM | Opt-in | `host/secure-boot.sh` (Secure Boot + TPM PCR bind) + `host/tpm-initramfs-hook.sh` |
 
-The "Partial" items are partial for honest reasons: some depend on a firmware
-toggle the OS can't set (memory encryption needs TSME in the BIOS), and some are
-powerful but brick-prone enough that they're opt-in and should be tested on a
-spare machine first (Secure Boot key enrollment, TPM-bound unlock, full-disk
+The opt-in items are left off by default for good reason: some depend on a
+firmware toggle the OS can't set (memory encryption needs TSME in the BIOS), and
+some are powerful but brick-prone enough that they should be tested on a spare
+machine first (Secure Boot key enrollment, TPM-bound unlock, full-disk
 encryption).
-
-## Notes and current limitations
-
-- **No GPU passthrough yet.** Rendering is through SPICE with software rendering.
-  The hooks for VFIO passthrough are marked `TODO(GPU-passthrough)` in the code.
-  Only one VM can own the single physical GPU at a time.
-- **Wi-Fi never touches the VMs.** They sit on isolated bridges and are NAT'd out
-  whatever the host uses, so switching between Wi-Fi and wired needs no isolation
-  changes.
-- **Captive portals with device-compliance checks** (Intune-managed-device certs)
-  will reject an unmanaged Alpine host — use a separate uplink in that case.
-- **Debian** is supported as a guest OS too; the host scripts detect apt-based
-  systems and adapt.
-
-## Quick checklist
-
-After the full setup and once the guests have booted:
-
-- [ ] CPU vendor detected and nested virt on — `cat /sys/module/kvm_*/parameters/nested` shows `Y`/`1`
-- [ ] RAM/CPU/disk split written to `config.env`
-- [ ] All VMs autostart — `virsh list --all --autostart`
-- [ ] Boot lands on the office VM full-screen
-- [ ] Host has internet — `ping -c1 1.1.1.1`
-- [ ] Every VM reaches the internet — `isolate.sh` prints PASS
-- [ ] No VM can reach another — `isolate.sh` prints PASS for all peer checks
