@@ -1,0 +1,20 @@
+# Local, machine-specific config — holds SECRETS (guest password, WiFi PSK,
+# LUKS passphrase, WireGuard private keys). NEVER commit. Commit only the
+# template config.env.example.
+config.env
+
+# Build outputs / disk images (large, generated)
+out/
+*.qcow2
+*.raw
+*.img
+
+# Downloaded base cloud images / build cache
+base-*.img
+base-*.qcow2
+*-seed.iso
+
+# Temp / OS cruft
+*.tmp
+*.part
+.DS_Store
