@@ -217,6 +217,13 @@ administration_ENABLED=1; administration_OS="arch"; administration_DE="gnome"
   `none` for a CLI-only guest.
 - **Egress** — `<env>_EGRESS_MODE=all|whitelist` plus `<env>_EGRESS_ALLOW="ip ip"`.
 - **VPN** — `<env>_VPN=1` with WireGuard details, then run `environments/vpn.sh`.
+- **Custom APT source** — point apt-family guests (ubuntu/debian) at your own
+  package source instead of the public archives: `APT_MIRROR` sets a base mirror
+  (via cloud-init `apt.primary`) and `APT_PROXY` sets a caching proxy such as
+  apt-cacher-ng (applied as the global apt proxy, so it also covers the in-guest
+  Microsoft/Wazuh repos). Both empty = default upstream mirrors; Arch guests
+  ignore them. Rerouting where bytes come from doesn't loosen trust — the pinned
+  GPG fingerprints still gate what is installed.
 
 RAM, vCPUs and disk are split evenly across the enabled environments, with host
 headroom reserved first.

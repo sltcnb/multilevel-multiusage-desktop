@@ -80,6 +80,25 @@ mkdir -p "$IMAGES_DIR" "$CACHE_DIR"
 : "${MS_GPG_FPR:=BC528686B50D79E339D3721CEB3E94ADBE1229CF}"
 : "${WAZUH_GPG_FPR:=0DCFCA5547B19D2A6099506096B3EE5F29111145}"
 
+# -----------------------------------------------------------------------------
+# Custom APT source (OPTIONAL — applies to apt-family guests: ubuntu/debian).
+#   APT_MIRROR : base mirror URL that REPLACES the image's default distro
+#                archive (e.g. an internal mirror or a pull-through cache).
+#                Wired through cloud-init's apt.primary, so it also covers the
+#                suite's security/updates pockets — not just the initial fetch.
+#   APT_PROXY  : caching HTTP(S) proxy for apt, e.g. an apt-cacher-ng instance
+#                reachable on the isolated net (http://10.20.30.1:3142). Set as
+#                the GLOBAL apt Acquire proxy, so it ALSO transparently covers
+#                the third-party repos added inside the guest (Microsoft, Wazuh).
+#   Both EMPTY -> guests keep their image's built-in upstream mirrors (default
+#                behavior, nothing changes). Arch guests ignore these (pacman).
+#   These only reroute WHERE packages come from; the third-party GPG-fingerprint
+#   pinning above still gates WHAT is trusted, so a hostile mirror/proxy cannot
+#   substitute keys.
+# -----------------------------------------------------------------------------
+: "${APT_MIRROR:=}"
+: "${APT_PROXY:=}"
+
 # require_pinned_fpr VARNAME LABEL — fail closed if a pinned fingerprint the
 # current config actually needs was blanked out.
 require_pinned_fpr() {
@@ -147,6 +166,27 @@ make_seed() {
   de_pkg_lines="  - qemu-guest-agent"
   de_runcmd_lines="  - systemctl enable --now qemu-guest-agent || true"
   _os="$(env_val "$vm" OS arch)"; _de="$(env_val "$vm" DE none)"
+
+  # ---- Custom APT mirror / caching proxy (apt-family guests only) -----------
+  # Emit a cloud-init top-level `apt:` block when APT_MIRROR/APT_PROXY are set.
+  # cloud-init only honors this on apt distros, but we gate anyway to keep the
+  # user-data clean for Arch. proxy is global (covers third-party repos too);
+  # primary rewrites the base archive mirror.
+  apt_cfg_lines=""
+  if [ "$(os_family "$_os")" = "apt" ] && { [ -n "$APT_MIRROR" ] || [ -n "$APT_PROXY" ]; }; then
+    apt_cfg_lines="apt:"
+    if [ -n "$APT_PROXY" ]; then
+      apt_cfg_lines="$apt_cfg_lines
+  proxy: \"$APT_PROXY\""
+    fi
+    if [ -n "$APT_MIRROR" ]; then
+      apt_cfg_lines="$apt_cfg_lines
+  primary:
+    - arches: [default]
+      uri: \"$APT_MIRROR\""
+    fi
+    log "$vm: custom apt source (${APT_MIRROR:+mirror=$APT_MIRROR }${APT_PROXY:+proxy=$APT_PROXY})"
+  fi
   if [ "$_de" != "none" ]; then
     case "$_os" in
       ubuntu)
@@ -269,6 +309,8 @@ chpasswd:
     - name: $GUEST_USER
       password: "$GUEST_PASSWORD"
       type: text
+# Optional custom apt mirror/proxy (empty unless APT_MIRROR/APT_PROXY set).
+$apt_cfg_lines
 # Package install differs per distro but cloud-init abstracts it.
 package_update: true
 packages:
