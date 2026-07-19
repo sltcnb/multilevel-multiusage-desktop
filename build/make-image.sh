@@ -65,7 +65,6 @@ APPLIANCE_TAR_B64="$(tar -czf - \
 #    It fetches alpine-make-vm-image and invokes it with a "profile" callback
 #    (--script-chroot) that runs inside the target rootfs to install our stuff.
 # -----------------------------------------------------------------------------
-BUILDER=/work/_build_inside.sh
 cat > "$OUT_DIR/_build_inside.sh" <<'INNER'
 #!/bin/sh
 set -eu

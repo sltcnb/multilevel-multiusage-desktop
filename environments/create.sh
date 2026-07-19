@@ -37,10 +37,11 @@ mkdir -p "$IMAGES_DIR" "$CACHE_DIR"
 
 # -----------------------------------------------------------------------------
 # Guest password: empty or "generate" -> auto-generate (recorded in
-# /root/generated-secrets.txt). Then hash it for cloud-init (no plaintext baked).
+# /root/generated-secrets.txt). Handed to cloud-init as plaintext (type: text)
+# so cloud-init hashes it internally — the most portable form across cloud-init
+# versions (a pre-hashed value was rejected by some builds; see make_seed).
 # -----------------------------------------------------------------------------
 GUEST_PASSWORD="$(resolve_secret GUEST_PASSWORD)"
-PW_HASH="$(openssl passwd -6 "$GUEST_PASSWORD")"
 
 # -----------------------------------------------------------------------------
 # ensure_net NAME BRIDGE SUBNET  — define+start an ISOLATED NAT network.
@@ -299,15 +300,16 @@ create_vm() {
       "encrypt.key-secret=sec0" "$vmdisk" "${disk}G" 2>/dev/null || qemu-img resize "$vmdisk" "${disk}G" 2>/dev/null || true
     # Define a libvirt secret so the domain can unlock the disk at start.
     secuuid="$(printf '%s' "$name" | md5sum | sed 's/\(........\)\(....\)\(....\)\(....\)\(............\).*/\1-\2-\3-\4-\5/')"
-    cat > /tmp/sec-$name.xml <<SX
+    sec_xml="$(mktemp)"
+    cat > "$sec_xml" <<SX
 <secret ephemeral='no' private='yes'>
   <uuid>$secuuid</uuid>
   <usage type='volume'><volume>$vmdisk</volume></usage>
 </secret>
 SX
-    virsh secret-define /tmp/sec-$name.xml >/dev/null 2>&1 || true
+    virsh secret-define "$sec_xml" >/dev/null 2>&1 || true
     virsh secret-set-value "$secuuid" --base64 "$(printf '%s' "$dpass" | base64)" >/dev/null 2>&1 || true
-    rm -f /tmp/sec-$name.xml "$secpath"
+    rm -f "$sec_xml" "$secpath"
     disk_opts="path=$vmdisk,format=qcow2,bus=virtio,driver.type=qcow2,encryption.format=luks,encryption.secret.type=passphrase,encryption.secret.uuid=$secuuid"
   else
     log "Preparing disk for $name (${disk}G) ..."

@@ -36,7 +36,7 @@ done
 # Optionally wipe seed ISOs (plaintext password). Off by default because they are
 # attached to the domains as cdrom; set SCRUB_SEEDS=1 to detach+remove.
 if [ "${SCRUB_SEEDS:-0}" = "1" ]; then
-  for_each_enabled_env | while read -r env idx; do
+  for_each_enabled_env | while read -r env _; do
     virsh detach-disk "$env" sda --config 2>/dev/null || true
     rm -f "$IMAGES_DIR/${env}-seed.iso" 2>/dev/null || true
   done

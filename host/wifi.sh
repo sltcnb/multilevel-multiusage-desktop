@@ -35,7 +35,11 @@ fi
 # 1. Resolve the wlan interface.
 # -----------------------------------------------------------------------------
 if [ "${WIFI_IFACE:-auto}" = "auto" ]; then
-  WIFI_IFACE="$(ls /sys/class/net | grep -m1 '^wl' || true)"
+  WIFI_IFACE=""
+  for _if in /sys/class/net/wl*; do
+    [ -e "$_if" ] || continue
+    WIFI_IFACE="$(basename "$_if")"; break
+  done
   [ -n "$WIFI_IFACE" ] || die "No wlan interface found. Missing firmware/driver? (see 00/01 WIFI_FIRMWARE_PKG)"
 fi
 set_kv WIFI_IFACE "$WIFI_IFACE"
