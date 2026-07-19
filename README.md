@@ -1,5 +1,10 @@
 # multilevel
 
+[![shellcheck](https://github.com/sltcnb/multilevel-multiusage-desktop/actions/workflows/shellcheck.yml/badge.svg)](https://github.com/sltcnb/multilevel-multiusage-desktop/actions/workflows/shellcheck.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Shell: POSIX/bash](https://img.shields.io/badge/shell-POSIX%20%7C%20bash-4EAA25?logo=gnubash&logoColor=white)](https://www.shellcheck.net/)
+[![ANSSI PA-114](https://img.shields.io/badge/aligned-ANSSI--PA--114-002654)](https://cyber.gouv.fr/)
+
 A locked-down laptop that runs three separate worlds side by side and lets you
 flip between them with a single keystroke.
 
@@ -323,3 +328,28 @@ firmware toggle the OS can't set (memory encryption needs TSME in the BIOS), and
 some are powerful but brick-prone enough that they should be tested on a spare
 machine first (Secure Boot key enrollment, TPM-bound unlock, full-disk
 encryption).
+
+## Development
+
+Every script is `set -euo pipefail` (or `set -eu` for the POSIX `lib/common.sh`),
+checks for root and its dependencies, and is safe to re-run. Continuous
+integration runs [ShellCheck](https://www.shellcheck.net/) on every push and pull
+request; it fails on warnings and above. Run the same check locally before
+opening a PR:
+
+```sh
+shellcheck -x -S warning lib/*.sh host/*.sh environments/*.sh installer/*.sh build/*.sh
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for style and review expectations.
+
+## Security
+
+Isolation between environments is the core guarantee of this project. To report a
+vulnerability privately, see [SECURITY.md](SECURITY.md). Secrets live only in the
+git-ignored `config.env` or on the appliance — never in the repository or a
+shipped image.
+
+## License
+
+Released under the [MIT License](LICENSE).
