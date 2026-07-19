@@ -34,6 +34,9 @@ require_cmds() {
 # config.env and config.env.example live at that root.
 APP_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CONFIG_ENV="$APP_ROOT/config.env"
+# Consumed by sourcing scripts (e.g. host/detect-and-install.sh seeds config.env
+# from it); shellcheck can't see cross-file use of a sourced library variable.
+# shellcheck disable=SC2034
 CONFIG_EXAMPLE="$APP_ROOT/config.env.example"
 
 load_config() {

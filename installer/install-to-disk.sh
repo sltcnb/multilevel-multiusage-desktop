@@ -42,7 +42,7 @@ lsblk -dno NAME,SIZE,TYPE,MODEL,RM | sed 's/^/    /'
 # Candidates: type=disk, name != usb_disk, RM(removable)=0.
 target=""
 best_bytes=0
-while read -r name size type rm; do
+while read -r name _ type rm; do
   [ "$type" = "disk" ] || continue
   [ "$name" = "$usb_disk" ] && continue
   [ "$rm" = "0" ] || continue            # skip removable (other USBs)

@@ -119,7 +119,7 @@ compute_split() {
 
   log "Per-env split across $n enabled env(s): RAM=${per_ram}MB VCPU=${per_cpu} DISK=${per_disk}G"
   # set_kv writes to config.env (persists even from this pipe subshell).
-  for_each_enabled_env | while read -r e i; do
+  for_each_enabled_env | while read -r e _; do
     set_kv "${e}_RAM_MB"  "$per_ram"
     set_kv "${e}_VCPU"    "$per_cpu"
     set_kv "${e}_DISK_GB" "$per_disk"
@@ -209,9 +209,8 @@ for m in usbhid hid_generic; do modprobe "$m" 2>/dev/null || true; done
 # Load now (reload to pick up nested=1 if already loaded without it).
 modprobe -r "$KVM_MODULE" 2>/dev/null || true
 modprobe "$KVM_MODULE"
-# Verify nested actually turned on.
-NCHAR=$( [ "$CPU_VENDOR" = intel ] && echo N || echo Y )  # both report Y/1 when on
-nested_state="$(cat /sys/module/${KVM_MODULE}/parameters/nested 2>/dev/null || echo '?')"
+# Verify nested actually turned on (both vendors report Y/1 when enabled).
+nested_state="$(cat "/sys/module/${KVM_MODULE}/parameters/nested" 2>/dev/null || echo '?')"
 case "$nested_state" in
   Y|1) ok "Nested virt ENABLED (nested=$nested_state).";;
   *)   warn "Nested virt not confirmed (nested=$nested_state). May need reboot.";;

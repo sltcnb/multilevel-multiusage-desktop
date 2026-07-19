@@ -1,5 +1,10 @@
 # multilevel
 
+[![shellcheck](https://github.com/sltcnb/multilevel-multiusage-desktop/actions/workflows/shellcheck.yml/badge.svg)](https://github.com/sltcnb/multilevel-multiusage-desktop/actions/workflows/shellcheck.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Shell: POSIX/bash](https://img.shields.io/badge/shell-POSIX%20%7C%20bash-4EAA25?logo=gnubash&logoColor=white)](https://www.shellcheck.net/)
+[![ANSSI PA-114](https://img.shields.io/badge/aligned-ANSSI--PA--114-002654)](https://cyber.gouv.fr/)
+
 A locked-down laptop that runs three separate worlds side by side and lets you
 flip between them with a single keystroke.
 
@@ -144,6 +149,12 @@ VM gets online through the host (they all share the host's single connection via
 NAT). Do this **before** creating the VMs, because their first boot needs
 internet.
 
+Before the first run, pin the SHA256 of each base cloud image you'll actually
+use (`UBUNTU_IMG_SHA256` / `ARCH_IMG_SHA256` / `DEBIAN_IMG_SHA256` in
+`config.env` — see the comments there for where to get the vendor's published
+checksum). `create.sh` fails closed and refuses to use an image whose hash
+isn't pinned or doesn't match, by design.
+
 Then build and lock down the VMs:
 
 ```sh
@@ -206,6 +217,13 @@ administration_ENABLED=1; administration_OS="arch"; administration_DE="gnome"
   `none` for a CLI-only guest.
 - **Egress** — `<env>_EGRESS_MODE=all|whitelist` plus `<env>_EGRESS_ALLOW="ip ip"`.
 - **VPN** — `<env>_VPN=1` with WireGuard details, then run `environments/vpn.sh`.
+- **Custom APT source** — point apt-family guests (ubuntu/debian) at your own
+  package source instead of the public archives: `APT_MIRROR` sets a base mirror
+  (via cloud-init `apt.primary`) and `APT_PROXY` sets a caching proxy such as
+  apt-cacher-ng (applied as the global apt proxy, so it also covers the in-guest
+  Microsoft/Wazuh repos). Both empty = default upstream mirrors; Arch guests
+  ignore them. Rerouting where bytes come from doesn't loosen trust — the pinned
+  GPG fingerprints still gate what is installed.
 
 RAM, vCPUs and disk are split evenly across the enabled environments, with host
 headroom reserved first.
@@ -323,3 +341,35 @@ firmware toggle the OS can't set (memory encryption needs TSME in the BIOS), and
 some are powerful but brick-prone enough that they should be tested on a spare
 machine first (Secure Boot key enrollment, TPM-bound unlock, full-disk
 encryption).
+
+## Development
+
+Every script is `set -euo pipefail` (or `set -eu` for the POSIX `lib/common.sh`),
+checks for root and its dependencies, and is safe to re-run. Continuous
+integration runs [ShellCheck](https://www.shellcheck.net/) on every push and pull
+request; it fails on warnings and above. Run the same check locally before
+opening a PR:
+
+```sh
+shellcheck -x -S warning lib/*.sh host/*.sh environments/*.sh installer/*.sh build/*.sh
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for style and review expectations.
+
+## Security
+
+Isolation between environments is the core guarantee of this project. To report a
+vulnerability privately, see [SECURITY.md](SECURITY.md). Secrets live only in the
+git-ignored `config.env` or on the appliance — never in the repository or a
+shipped image.
+
+Supply-chain integrity is enforced fail-closed: `environments/create.sh` refuses
+to use a base cloud image whose SHA256 isn't pinned in `config.env` and matching,
+and refuses to trust a third-party apt signing key (Microsoft, Wazuh) whose
+fingerprint doesn't match the pinned value after import. `host/harden.sh` always
+sets `PermitEmptyPasswords no` and denies the passwordless kiosk console account
+over SSH, regardless of the `HARDEN_INPUT`/`HOST_SSH` firewall settings.
+
+## License
+
+Released under the [MIT License](LICENSE).
