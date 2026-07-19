@@ -2,13 +2,14 @@
 # =============================================================================
 # host/harden.sh   (ANSSI #2 — socle durci à l'état de l'art)
 # -----------------------------------------------------------------------------
-# Hardens the host ("socle"): kernel sysctl hardening (always) + an optional
-# default-DROP host INPUT firewall (nothing should connect TO the socle). This
-# is defense for the base system itself; VM isolation is handled by 05.
+# Hardens the host ("socle"): kernel sysctl hardening (always) + sshd hardening
+# (always, if sshd is installed) + an optional default-DROP host INPUT
+# firewall (nothing should connect TO the socle). This is defense for the base
+# system itself; VM isolation is handled by 05.
 #
-# Runs at first boot (idempotent). Safe defaults: sysctls always applied; the
-# host-input firewall is OPT-IN (HARDEN_INPUT=1) so it can't lock out an SSH you
-# rely on during setup.
+# Runs at first boot (idempotent). Safe defaults: sysctls and sshd hardening
+# are always applied; the host-input firewall is OPT-IN (HARDEN_INPUT=1) so it
+# can't lock out an SSH you rely on during setup.
 # =============================================================================
 set -euo pipefail
 
@@ -59,7 +60,56 @@ ok "sysctl hardening applied."
 echo '* hard core 0' > /etc/security/limits.d/00-appliance-nocore.conf 2>/dev/null || true
 
 # -----------------------------------------------------------------------------
-# 2. Host INPUT firewall (OPT-IN via HARDEN_INPUT=1). Default-DROP everything TO
+# 2. SSH hardening — fail closed for the no-password kiosk account.
+#    host/configure.sh creates KIOSK_USER unlocked (passwd -u) for tty1
+#    console autologin, but NEVER gives it a password (empty/no password) —
+#    it is meant for local console use only. If sshd happens to be installed
+#    (the base ISO may ship it) and reachable — HOST_SSH=1 below explicitly
+#    opens port 22, and with the default HARDEN_INPUT=0 there is no host
+#    firewall at all — an empty password must NEVER be usable over the
+#    network. Applied UNCONDITIONALLY (not gated on HARDEN_INPUT/HOST_SSH,
+#    which only control the host firewall, not whether sshd itself runs). A
+#    no-op if sshd isn't installed.
+# -----------------------------------------------------------------------------
+SSHD_CONFIG="/etc/ssh/sshd_config"
+if [ -f "$SSHD_CONFIG" ]; then
+  log "Hardening $SSHD_CONFIG (deny empty-password auth; deny kiosk over SSH) ..."
+  [ -f "$SSHD_CONFIG.orig" ] || cp "$SSHD_CONFIG" "$SSHD_CONFIG.orig"
+
+  # Fail closed regardless of distro/build default: never allow empty-password
+  # auth over SSH. Fix the line in place if present (even if it says "yes"),
+  # otherwise append it (it becomes the first — and effective — occurrence;
+  # sshd_config uses the first value set for a given keyword).
+  if grep -qiE '^[[:space:]]*PermitEmptyPasswords' "$SSHD_CONFIG"; then
+    sed -i -E 's/^[[:space:]]*PermitEmptyPasswords.*/PermitEmptyPasswords no/I' "$SSHD_CONFIG"
+  else
+    printf '\nPermitEmptyPasswords no\n' >> "$SSHD_CONFIG"
+  fi
+
+  # Belt-and-braces: explicitly deny the kiosk account over SSH. It is a
+  # local-console-only autologin account with no password at all; real
+  # (root/admin) accounts keep whatever PasswordAuthentication is configured.
+  KIOSK_USER="${KIOSK_USER:-kiosk}"
+  deny_line="DenyUsers $KIOSK_USER"
+  grep -qxF "$deny_line" "$SSHD_CONFIG" || printf '\n%s\n' "$deny_line" >> "$SSHD_CONFIG"
+
+  # Reload sshd if it's actually running (no-op otherwise / if not installed).
+  if command -v rc-service >/dev/null 2>&1 && rc-service sshd status >/dev/null 2>&1; then
+    rc-service sshd reload 2>/dev/null || true
+  elif command -v systemctl >/dev/null 2>&1; then
+    if systemctl is-active --quiet ssh 2>/dev/null; then
+      systemctl reload ssh 2>/dev/null || true
+    elif systemctl is-active --quiet sshd 2>/dev/null; then
+      systemctl reload sshd 2>/dev/null || true
+    fi
+  fi
+  ok "sshd hardened (PermitEmptyPasswords no; $KIOSK_USER denied over SSH)."
+else
+  log "No sshd_config found — nothing to harden (sshd not installed)."
+fi
+
+# -----------------------------------------------------------------------------
+# 3. Host INPUT firewall (OPT-IN via HARDEN_INPUT=1). Default-DROP everything TO
 #    the host except loopback, established/related, ICMP, and DHCP client. The
 #    socle exposes no services. Set HOST_SSH=1 to keep sshd reachable (port 22).
 # -----------------------------------------------------------------------------

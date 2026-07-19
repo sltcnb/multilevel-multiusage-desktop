@@ -22,7 +22,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/../lib/common.sh"
 require_root
 load_config
-require_cmds virt-install virsh qemu-img wget openssl
+require_cmds virt-install virsh qemu-img wget openssl sha256sum gpg
 
 mkdir -p "$IMAGES_DIR" "$CACHE_DIR"
 
@@ -34,6 +34,57 @@ mkdir -p "$IMAGES_DIR" "$CACHE_DIR"
 : "${ARCH_IMG_URL:=https://geo.mirror.pkgbuild.com/images/latest/Arch-Linux-x86_64-cloudimg.qcow2}"
 # Debian official genericcloud qcow2 (bookworm) — ships cloud-init.
 : "${DEBIAN_IMG_URL:=https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.qcow2}"
+
+# -----------------------------------------------------------------------------
+# Base image integrity pinning (REQUIRED per enabled OS — supply-chain).
+#   The URLs above are plain HTTPS to third-party mirrors/CDNs with no
+#   signature check of their own; a compromised mirror, a MITM, or a stale/
+#   poisoned local cache would otherwise be trusted blindly. fetch() below
+#   FAILS CLOSED: it refuses to use ANY image (fresh download OR already
+#   cached) whose SHA256 doesn't match exactly what is pinned here.
+#   These URLs serve "latest"/"current" ROLLING images, so there is no single
+#   stable "well-known" hash to bake in as a default (unlike the GPG signing
+#   keys below, which rotate far less often) — you must supply it yourself:
+#     1. Fetch the vendor's own published checksums (ideally over a path/
+#        network independent from this host) and verify THEIR signature
+#        before trusting them:
+#          Ubuntu:  https://cloud-images.ubuntu.com/jammy/current/SHA256SUMS
+#                   (+ SHA256SUMS.gpg, signed by Canonical's image key)
+#          Arch:    https://geo.mirror.pkgbuild.com/images/latest/sha256sums.txt
+#                   (+ .sig, signed by the Arch Linux release key)
+#          Debian:  https://cloud.debian.org/images/cloud/bookworm/latest/SHA256SUMS
+#                   (+ SHA256SUMS.sign, signed by the Debian cloud image key)
+#     2. Set the matching 64-hex-char digest in config.env, e.g.:
+#          UBUNTU_IMG_SHA256="...64 hex chars..."
+# Left EMPTY here on purpose: create.sh will abort for any OS you enabled
+# until you set it. When a vendor publishes a new build, the pinned hash goes
+# stale by design — re-verify + update it then; do not blank it out to make
+# the error go away.
+: "${UBUNTU_IMG_SHA256:=}"
+: "${ARCH_IMG_SHA256:=}"
+: "${DEBIAN_IMG_SHA256:=}"
+
+# -----------------------------------------------------------------------------
+# Pinned GPG fingerprints for third-party apt repos installed INSIDE guests
+# (Microsoft Intune/Edge, Wazuh agent — see make_seed below). The upstream
+# `curl ... | gpg --dearmor` pattern trusts ANY key served at that URL with no
+# verification; a compromised CDN/mirror or MITM could swap in an attacker key
+# whose packages the guest would then trust. FAIL CLOSED: the cloud-init
+# runcmd re-checks the ACTUALLY downloaded key's fingerprint against these
+# before dearmoring it, and aborts that integration (no keyring written, repo
+# not added, package not installed) on any mismatch. require_pinned_fpr()
+# additionally refuses to build the seed at all if a needed one is blanked
+# out. Defaults are the vendors' current, well-known, long-lived signing-key
+# fingerprints (verified independently) — override only if a vendor rotates
+# its key, and verify the new one out-of-band first.
+: "${MS_GPG_FPR:=BC528686B50D79E339D3721CEB3E94ADBE1229CF}"
+: "${WAZUH_GPG_FPR:=0DCFCA5547B19D2A6099506096B3EE5F29111145}"
+
+# require_pinned_fpr VARNAME LABEL — fail closed if a pinned fingerprint the
+# current config actually needs was blanked out.
+require_pinned_fpr() {
+  eval "[ -n \"\${${1}:-}\" ]" || die "$1 is empty — refusing to install $2 without a pinned GPG fingerprint (see config.env.example)."
+}
 
 # -----------------------------------------------------------------------------
 # Guest password: empty or "generate" -> auto-generate (recorded in
@@ -146,12 +197,10 @@ make_seed() {
   # sign in with Entra (device compliance). We only pre-install the tooling.
   if [ "$(env_val "$vm" INTUNE 0)" = "1" ]; then
     if [ "$_os" = "ubuntu" ]; then
+      require_pinned_fpr MS_GPG_FPR "Intune (Microsoft repo key)"
       de_runcmd_lines="$de_runcmd_lines
-  - curl -sSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /usr/share/keyrings/microsoft.gpg
-  - sh -c 'echo \"deb [arch=amd64 signed-by=/usr/share/keyrings/microsoft.gpg] https://packages.microsoft.com/ubuntu/22.04/prod jammy main\" > /etc/apt/sources.list.d/microsoft-prod.list'
-  - apt-get update
-  - DEBIAN_FRONTEND=noninteractive apt-get install -y intune-portal
-  - systemctl enable microsoft-identity-broker 2>/dev/null || true"
+  - sh -c 'set -e; t=\$(mktemp); curl -fsSL https://packages.microsoft.com/keys/microsoft.asc -o \"\$t\"; f=\$(gpg --with-colons --import-options show-only --import \"\$t\" 2>/dev/null | grep \"^fpr\" | head -n1 | cut -f10 -d:); if [ \"\$f\" != \"$MS_GPG_FPR\" ]; then echo \"FATAL - Microsoft GPG key fingerprint mismatch (got \$f, expected $MS_GPG_FPR) -- aborting, Intune NOT installed.\" >&2; rm -f \"\$t\"; exit 1; fi; gpg --dearmor -o /usr/share/keyrings/microsoft.gpg < \"\$t\"; rm -f \"\$t\"'
+  - sh -c '[ -s /usr/share/keyrings/microsoft.gpg ] && echo \"deb [arch=amd64 signed-by=/usr/share/keyrings/microsoft.gpg] https://packages.microsoft.com/ubuntu/22.04/prod jammy main\" > /etc/apt/sources.list.d/microsoft-prod.list && apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y intune-portal && (systemctl enable microsoft-identity-broker 2>/dev/null || true)'"
       log "$vm: Intune prep queued (enroll interactively after boot)."
     else
       warn "$vm: INTUNE=1 ignored — Intune enrollment is Ubuntu-only (this env is $_os)."
@@ -164,13 +213,12 @@ make_seed() {
   # this is an Intune-enrolled device, we install Teams AND Outlook as PWAs inside
   # the managed Edge — that's the Conditional-Access-compliant path. (apt distros.)
   if [ "$(env_val "$vm" MSAPPS 0)" = "1" ] && [ "$(os_family "$_os")" = "apt" ]; then
+    require_pinned_fpr MS_GPG_FPR "Edge/Outlook/Teams (Microsoft repo key)"
     de_runcmd_lines="$de_runcmd_lines
-  - curl -sSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /usr/share/keyrings/microsoft.gpg
-  - sh -c 'echo \"deb [arch=amd64 signed-by=/usr/share/keyrings/microsoft.gpg] https://packages.microsoft.com/repos/edge stable main\" > /etc/apt/sources.list.d/microsoft-edge.list'
-  - apt-get update
-  - DEBIAN_FRONTEND=noninteractive apt-get install -y microsoft-edge-stable
-  - sh -c 'printf \"[Desktop Entry]\\nName=Outlook\\nExec=microsoft-edge-stable --app=https://outlook.office.com\\nType=Application\\nIcon=microsoft-edge\\nCategories=Office;Network;\\n\" > /usr/share/applications/outlook.desktop'
-  - sh -c 'printf \"[Desktop Entry]\\nName=Microsoft Teams\\nExec=microsoft-edge-stable --app=https://teams.microsoft.com\\nType=Application\\nIcon=microsoft-edge\\nCategories=Office;Network;\\n\" > /usr/share/applications/teams.desktop'"
+  - sh -c 'set -e; t=\$(mktemp); curl -fsSL https://packages.microsoft.com/keys/microsoft.asc -o \"\$t\"; f=\$(gpg --with-colons --import-options show-only --import \"\$t\" 2>/dev/null | grep \"^fpr\" | head -n1 | cut -f10 -d:); if [ \"\$f\" != \"$MS_GPG_FPR\" ]; then echo \"FATAL - Microsoft GPG key fingerprint mismatch (got \$f, expected $MS_GPG_FPR) -- aborting, Edge/Outlook/Teams NOT installed.\" >&2; rm -f \"\$t\"; exit 1; fi; gpg --dearmor -o /usr/share/keyrings/microsoft.gpg < \"\$t\"; rm -f \"\$t\"'
+  - sh -c '[ -s /usr/share/keyrings/microsoft.gpg ] && echo \"deb [arch=amd64 signed-by=/usr/share/keyrings/microsoft.gpg] https://packages.microsoft.com/repos/edge stable main\" > /etc/apt/sources.list.d/microsoft-edge.list && apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y microsoft-edge-stable'
+  - sh -c '[ -s /usr/share/keyrings/microsoft.gpg ] && printf \"[Desktop Entry]\\nName=Outlook\\nExec=microsoft-edge-stable --app=https://outlook.office.com\\nType=Application\\nIcon=microsoft-edge\\nCategories=Office;Network;\\n\" > /usr/share/applications/outlook.desktop'
+  - sh -c '[ -s /usr/share/keyrings/microsoft.gpg ] && printf \"[Desktop Entry]\\nName=Microsoft Teams\\nExec=microsoft-edge-stable --app=https://teams.microsoft.com\\nType=Application\\nIcon=microsoft-edge\\nCategories=Office;Network;\\n\" > /usr/share/applications/teams.desktop'"
     log "$vm: Outlook + Teams (Edge PWAs, Conditional-Access compliant) queued."
   fi
 
@@ -182,12 +230,10 @@ make_seed() {
     if [ -z "$wm" ]; then
       warn "$vm: WAZUH=1 but WAZUH_MANAGER is empty — skipping."
     elif [ "$(os_family "$_os")" = "apt" ]; then
+      require_pinned_fpr WAZUH_GPG_FPR "Wazuh agent (Wazuh repo key)"
       de_runcmd_lines="$de_runcmd_lines
-  - curl -sSL https://packages.wazuh.com/key/GPG-KEY-WAZUH | gpg --dearmor -o /usr/share/keyrings/wazuh.gpg
-  - sh -c 'echo \"deb [signed-by=/usr/share/keyrings/wazuh.gpg] https://packages.wazuh.com/4.x/apt/ stable main\" > /etc/apt/sources.list.d/wazuh.list'
-  - apt-get update
-  - sh -c 'WAZUH_MANAGER=\"$wm\" DEBIAN_FRONTEND=noninteractive apt-get install -y wazuh-agent'
-  - systemctl enable --now wazuh-agent"
+  - sh -c 'set -e; t=\$(mktemp); curl -fsSL https://packages.wazuh.com/key/GPG-KEY-WAZUH -o \"\$t\"; f=\$(gpg --with-colons --import-options show-only --import \"\$t\" 2>/dev/null | grep \"^fpr\" | head -n1 | cut -f10 -d:); if [ \"\$f\" != \"$WAZUH_GPG_FPR\" ]; then echo \"FATAL - Wazuh GPG key fingerprint mismatch (got \$f, expected $WAZUH_GPG_FPR) -- aborting, Wazuh agent NOT installed.\" >&2; rm -f \"\$t\"; exit 1; fi; gpg --dearmor -o /usr/share/keyrings/wazuh.gpg < \"\$t\"; rm -f \"\$t\"'
+  - sh -c '[ -s /usr/share/keyrings/wazuh.gpg ] && echo \"deb [signed-by=/usr/share/keyrings/wazuh.gpg] https://packages.wazuh.com/4.x/apt/ stable main\" > /etc/apt/sources.list.d/wazuh.list && apt-get update && WAZUH_MANAGER=\"$wm\" DEBIAN_FRONTEND=noninteractive apt-get install -y wazuh-agent && systemctl enable --now wazuh-agent'"
       log "$vm: Wazuh agent -> $wm (apt)."
     else   # arch (AUR, best-effort)
       de_runcmd_lines="$de_runcmd_lines
@@ -253,14 +299,37 @@ EOF
 }
 
 # -----------------------------------------------------------------------------
-# fetch  URL DEST — download once (idempotent cache).
+# verify_image_sha256  FILE EXPECTED  — fail closed on missing/mismatched hash.
+#   Deletes FILE on mismatch so a poisoned/corrupt image can never be reused
+#   by a later idempotent run.
+# -----------------------------------------------------------------------------
+verify_image_sha256() {
+  file="$1"; expected="$2"
+  if [ -z "$expected" ]; then
+    die "No SHA256 pinned for $(basename "$file") — set its *_IMG_SHA256 in config.env before using this image (see config.env.example for how to obtain it). Refusing to trust an unverified download."
+  fi
+  actual="$(sha256sum "$file" | awk '{print $1}')"
+  if [ "$actual" != "$expected" ]; then
+    rm -f "$file"
+    die "SHA256 MISMATCH for $(basename "$file"): expected $expected, got $actual. Deleted the file — it may be corrupt, a stale mirror, or tampered. Re-verify the URL/hash before retrying."
+  fi
+  ok "$(basename "$file"): SHA256 verified."
+}
+
+# -----------------------------------------------------------------------------
+# fetch  URL DEST SHA256 — download once (idempotent cache), then verify
+#   integrity EVERY time — fresh download or cache hit alike (fail closed).
 # -----------------------------------------------------------------------------
 fetch() {
-  url="$1"; dest="$2"
-  if [ -f "$dest" ]; then log "Cached: $(basename "$dest")"; return; fi
-  log "Downloading $(basename "$dest") ..."
-  wget -O "$dest.part" "$url"
-  mv "$dest.part" "$dest"
+  url="$1"; dest="$2"; expected_sha256="$3"
+  if [ -f "$dest" ]; then
+    log "Cached: $(basename "$dest") — re-verifying integrity ..."
+  else
+    log "Downloading $(basename "$dest") ..."
+    wget -O "$dest.part" "$url"
+    mv "$dest.part" "$dest"
+  fi
+  verify_image_sha256 "$dest" "$expected_sha256"
 }
 
 # -----------------------------------------------------------------------------
@@ -356,9 +425,9 @@ need_ubuntu=0; need_arch=0; need_debian=0
 for pair in $(for_each_enabled_env | awk '{print $1}'); do
   case "$(env_val "$pair" OS arch)" in ubuntu) need_ubuntu=1;; arch) need_arch=1;; debian) need_debian=1;; esac
 done
-[ "$need_ubuntu" = 1 ] && fetch "$UBUNTU_IMG_URL" "$IMAGES_DIR/base-ubuntu.img"
-[ "$need_arch"   = 1 ] && fetch "$ARCH_IMG_URL"   "$IMAGES_DIR/base-arch.qcow2"
-[ "$need_debian" = 1 ] && fetch "$DEBIAN_IMG_URL" "$IMAGES_DIR/base-debian.qcow2"
+[ "$need_ubuntu" = 1 ] && fetch "$UBUNTU_IMG_URL" "$IMAGES_DIR/base-ubuntu.img"   "$UBUNTU_IMG_SHA256"
+[ "$need_arch"   = 1 ] && fetch "$ARCH_IMG_URL"   "$IMAGES_DIR/base-arch.qcow2"   "$ARCH_IMG_SHA256"
+[ "$need_debian" = 1 ] && fetch "$DEBIAN_IMG_URL" "$IMAGES_DIR/base-debian.qcow2" "$DEBIAN_IMG_SHA256"
 
 # ENTRA/INTUNE constraint: any env with INTUNE=1 MUST be Ubuntu (Intune Linux
 # enrollment is Ubuntu-only). Enforce so the office/desktop stays Ubuntu.

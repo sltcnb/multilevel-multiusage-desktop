@@ -149,6 +149,12 @@ VM gets online through the host (they all share the host's single connection via
 NAT). Do this **before** creating the VMs, because their first boot needs
 internet.
 
+Before the first run, pin the SHA256 of each base cloud image you'll actually
+use (`UBUNTU_IMG_SHA256` / `ARCH_IMG_SHA256` / `DEBIAN_IMG_SHA256` in
+`config.env` — see the comments there for where to get the vendor's published
+checksum). `create.sh` fails closed and refuses to use an image whose hash
+isn't pinned or doesn't match, by design.
+
 Then build and lock down the VMs:
 
 ```sh
@@ -349,6 +355,13 @@ Isolation between environments is the core guarantee of this project. To report 
 vulnerability privately, see [SECURITY.md](SECURITY.md). Secrets live only in the
 git-ignored `config.env` or on the appliance — never in the repository or a
 shipped image.
+
+Supply-chain integrity is enforced fail-closed: `environments/create.sh` refuses
+to use a base cloud image whose SHA256 isn't pinned in `config.env` and matching,
+and refuses to trust a third-party apt signing key (Microsoft, Wazuh) whose
+fingerprint doesn't match the pinned value after import. `host/harden.sh` always
+sets `PermitEmptyPasswords no` and denies the passwordless kiosk console account
+over SSH, regardless of the `HARDEN_INPUT`/`HOST_SSH` firewall settings.
 
 ## License
 
