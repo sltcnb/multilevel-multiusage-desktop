@@ -18,3 +18,7 @@ base-*.qcow2
 *.tmp
 *.part
 .DS_Store
+
+# guest agent artifacts + stray screenshots
+*.pkg
+docs/img/
