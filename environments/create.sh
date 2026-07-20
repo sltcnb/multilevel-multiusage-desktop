@@ -165,6 +165,7 @@ make_seed() {
   # graphical target + lightdm autologin are identical.
   de_pkg_lines="  - qemu-guest-agent"
   de_runcmd_lines="  - systemctl enable --now qemu-guest-agent || true"
+  NEED_REBOOT=0
   _os="$(env_val "$vm" OS arch)"; _de="$(env_val "$vm" DE none)"
 
   # ---- Custom APT mirror / caching proxy (apt-family guests only) -----------
@@ -217,11 +218,19 @@ make_seed() {
           *) warn "Unknown DE '$_de'; defaulting to xfce4."; _pk="xorg xfce4 lightdm lightdm-gtk-greeter"; _dm="lightdm"; _sess="xfce" ;;
         esac ;;
     esac
-    for p in $_pk; do de_pkg_lines="$de_pkg_lines
-  - $p"; done
+    # Install the DE in runcmd with RETRIES + a log (not the `packages:` module,
+    # which fails SILENTLY if the network isn't up at the config stage). The log
+    # at /var/log/de-install.log makes a failed install visible + diagnosable.
+    if [ "$(os_family "$_os")" = "apt" ]; then
+      _inst="apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y $_pk"
+    else
+      _inst="pacman -Sy --noconfirm --needed $_pk"
+    fi
     de_runcmd_lines="$de_runcmd_lines
+  - sh -c 'for i in 1 2 3 4 5; do { $_inst ; } >>/var/log/de-install.log 2>&1 && { echo OK >>/var/log/de-install.log; break; }; echo \"retry \$i\" >>/var/log/de-install.log; sleep 15; done'
   - systemctl set-default graphical.target || true
   - systemctl enable $_dm || true"
+    NEED_REBOOT=1
     # Autologin (lightdm is scriptable simply; gdm/sddm best-effort).
     if [ "$_dm" = "lightdm" ]; then
       de_runcmd_lines="$de_runcmd_lines
@@ -285,6 +294,14 @@ make_seed() {
     fi
   fi
 
+  # After a DE install, reboot once so the guest comes up in graphical.target
+  # (gdm/lightdm is only ENABLED during cloud-init, not started that boot).
+  power_state_lines=""
+  [ "${NEED_REBOOT:-0}" = "1" ] && power_state_lines="power_state:
+  mode: reboot
+  condition: true
+  timeout: 30"
+
   cat > "$seed_dir/meta-data" <<EOF
 instance-id: $vm
 local-hostname: $host
@@ -316,6 +333,7 @@ packages:
 $de_pkg_lines
 runcmd:
 $de_runcmd_lines
+$power_state_lines
 # NOTE: no shared-folder / no cross-VM anything provisioned here (isolation).
 EOF
   # Build the NoCloud seed ISO. Prefer cloud-localds; else xorriso's mkisofs
