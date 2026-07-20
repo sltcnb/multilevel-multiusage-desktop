@@ -321,6 +321,10 @@ export INSTALL_HOST_PKGS=no
 # or UEFI, not both; UEFI is the right choice for current hardware). Legacy-BIOS
 # machines would instead need BOOT_MODE=BIOS (override BOOT_MODE in this script).
 : "${BOOT_MODE:=UEFI}"
+# Remove any stale raw from a previously interrupted build — alpine-make-vm-image
+# / qemu-nbd refuse to reopen a half-written one ("Permission denied").
+rm -f "/work/appliance.raw"
+
 alpine-make-vm-image \
   --image-format raw \
   --image-size "$IMG_SIZE" \
