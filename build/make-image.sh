@@ -124,7 +124,7 @@ apk add \
   xorriso \
   alpine-conf \
   parted sgdisk cloud-utils-growpart e2fsprogs-extra cryptsetup cryptsetup-openrc \
-  bash wget curl openssl \
+  bash wget curl openssl gnupg \
   openrc util-linux \
   grub grub-efi efibootmgr dosfstools || apk_rc=$?
 if [ "$apk_rc" != 0 ]; then

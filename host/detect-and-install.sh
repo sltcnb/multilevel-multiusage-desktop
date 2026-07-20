@@ -170,7 +170,7 @@ elif [ "$PKG" = "apk" ]; then
     firefox-esr \
     xorriso \
     alpine-conf parted sgdisk cloud-utils-growpart e2fsprogs-extra cryptsetup cryptsetup-openrc \
-    bash wget curl openssl
+    bash wget curl openssl gnupg
     # alpine-conf: provides setup-disk (used by 08 to install to internal disk).
     # firefox-esr: host browser for captive-portal (Entra) login only (07).
     # NOTE: NOT installing cloud-utils-localds on Alpine — it pulls cdrkit,
