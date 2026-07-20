@@ -56,10 +56,11 @@ mkdir -p "$IMAGES_DIR" "$CACHE_DIR"
 #                   (+ SHA256SUMS.sign, signed by the Debian cloud image key)
 #     2. Set the matching 64-hex-char digest in config.env, e.g.:
 #          UBUNTU_IMG_SHA256="...64 hex chars..."
-# Left EMPTY here on purpose: create.sh will abort for any OS you enabled
-# until you set it. When a vendor publishes a new build, the pinned hash goes
-# stale by design — re-verify + update it then; do not blank it out to make
-# the error go away.
+# OPTIONAL. Leave empty (default) to download without an integrity check (a
+# warning is printed). Set one to turn ON strict verification for that image;
+# a mismatch then deletes the file and aborts. REQUIRE_IMG_SHA256=1 makes a
+# missing pin a hard error for those who want to mandate it. When a vendor
+# publishes a new build a pinned hash goes stale — re-verify + update it then.
 : "${UBUNTU_IMG_SHA256:=}"
 : "${ARCH_IMG_SHA256:=}"
 : "${DEBIAN_IMG_SHA256:=}"
@@ -365,7 +366,14 @@ EOF
 verify_image_sha256() {
   file="$1"; expected="$2"
   if [ -z "$expected" ]; then
-    die "No SHA256 pinned for $(basename "$file") — set its *_IMG_SHA256 in config.env before using this image (see config.env.example for how to obtain it). Refusing to trust an unverified download."
+    # OPTIONAL by default: no pin -> skip verification (just warn). Set the
+    # matching *_IMG_SHA256 in config.env to turn on integrity checking for that
+    # image, or REQUIRE_IMG_SHA256=1 to make a missing pin a hard error.
+    if [ "${REQUIRE_IMG_SHA256:-0}" = "1" ]; then
+      die "No SHA256 pinned for $(basename "$file") and REQUIRE_IMG_SHA256=1 — set its *_IMG_SHA256 in config.env (see config.env.example)."
+    fi
+    warn "$(basename "$file"): no SHA256 pinned — skipping integrity check (set *_IMG_SHA256 to enable)."
+    return 0
   fi
   actual="$(sha256sum "$file" | awk '{print $1}')"
   if [ "$actual" != "$expected" ]; then
