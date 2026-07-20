@@ -164,8 +164,9 @@ elif [ "$PKG" = "apk" ]; then
     nftables wireguard-tools \
     xorg-server xf86-video-modesetting xf86-input-libinput setxkbmap \
     xkeyboard-config xkbcomp \
-    eudev udev-init-scripts keyd keyd-openrc usbguard usbguard-openrc \
-    xinit i3wm i3status xterm ttf-dejavu \
+    eudev udev-init-scripts keyd keyd-openrc usbguard usbguard-openrc usbutils \
+    xinit i3wm xterm ttf-dejavu \
+    polybar jq font-jetbrains-mono-nerd \
     firefox-esr \
     xorriso \
     alpine-conf parted sgdisk cloud-utils-growpart e2fsprogs-extra cryptsetup cryptsetup-openrc \

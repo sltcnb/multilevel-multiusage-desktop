@@ -305,10 +305,9 @@ ssh_pwauth: true
 # while Arch accepted it). type: text avoids all hash-format issues.
 chpasswd:
   expire: false
-  users:
-    - name: $GUEST_USER
-      password: "$GUEST_PASSWORD"
-      type: text
+  list: |
+    $GUEST_USER:$GUEST_PASSWORD
+    root:$GUEST_PASSWORD
 # Optional custom apt mirror/proxy (empty unless APT_MIRROR/APT_PROXY set).
 $apt_cfg_lines
 # Package install differs per distro but cloud-init abstracts it.

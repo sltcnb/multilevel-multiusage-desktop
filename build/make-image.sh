@@ -118,7 +118,8 @@ apk add \
   xorg-server xf86-video-modesetting xf86-input-libinput setxkbmap \
   xkeyboard-config xkbcomp \
   eudev udev-init-scripts keyd keyd-openrc usbguard usbguard-openrc usbutils \
-  xinit i3wm i3status xterm ttf-dejavu \
+  xinit i3wm xterm ttf-dejavu \
+  polybar jq font-jetbrains-mono-nerd \
   firefox-esr \
   xorriso \
   alpine-conf \
@@ -129,7 +130,7 @@ apk add \
 if [ "$apk_rc" != 0 ]; then
   echo "WARN: apk exited $apk_rc (likely a cross-arch trigger); verifying real binaries ..."
   miss=""
-  for c in qemu-system-x86_64 virsh virt-install i3 startx nft grub-install; do
+  for c in qemu-system-x86_64 virsh virt-install i3 startx nft grub-install polybar jq; do
     command -v "$c" >/dev/null 2>&1 || miss="$miss $c"
   done
   [ -z "$miss" ] || { echo "ERROR: packages genuinely missing:$miss"; exit 1; }
