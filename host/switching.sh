@@ -180,18 +180,18 @@ mut = #6b6b6b
 
 [bar/trust]
 width  = 100%
-height = 20
+height = 18
 radius = 0
 background = ${colors.bg}
 foreground = ${colors.fg}
 ; font-0 = normal text/icons, font-1 = big glyphs for the rounded pill caps
-font-0 = JetBrainsMono Nerd Font:size=9;2
-font-1 = JetBrainsMono Nerd Font:size=13;4
+font-0 = JetBrainsMono Nerd Font:size=8;2
+font-1 = JetBrainsMono Nerd Font:size=11;3
 padding-left  = 1
 padding-right = 2
 module-margin = 2
 modules-left  = env
-modules-right = net vpn battery date
+modules-right = cpu memory net vpn battery date
 ; override-redirect = the thin bar stays ON TOP of the fullscreen VM viewers
 override-redirect = true
 wm-restack = generic
@@ -201,6 +201,16 @@ enable-ipc = true
 type = custom/script
 exec = ~/.config/polybar/active-env.sh
 tail = true
+
+[module/cpu]
+type = internal/cpu
+interval = 2
+label = %{F#f0a45d}%{F-} %percentage%%
+
+[module/memory]
+type = internal/memory
+interval = 3
+label = %{F#c9a0ff}%{F-} %percentage_used%%
 
 [module/net]
 type = custom/script
@@ -296,9 +306,20 @@ mkdir -p /usr/local/bin /etc/keyd
 # reaches the kiosk's i3 (unquoted heredoc bakes the kiosk home; \$1 stays literal).
 cat > /usr/local/bin/vmswitch <<EOF
 #!/bin/sh
-# Called by keyd on a global hotkey. Talks to the kiosk user's i3 on :0.
-export DISPLAY=:0
-export XAUTHORITY="$KIOSK_HOME/.Xauthority"
+export PATH=/usr/local/bin:/usr/bin:/bin
+# Called by keyd (as ROOT) on a global hotkey. Talks to the kiosk user's i3.
+# CRITICAL: startx often puts the X cookie in ~/.serverauth.NNNN, NOT
+# ~/.Xauthority — a hardcoded path makes i3-msg fail auth and switching does
+# nothing. So read the REAL DISPLAY + XAUTHORITY from the running i3 process env.
+KU="$KIOSK_USER"
+pid="\$(pgrep -u "\$KU" -x i3 | head -1)"
+if [ -n "\$pid" ] && [ -r "/proc/\$pid/environ" ]; then
+  DISPLAY="\$(tr '\0' '\n' < "/proc/\$pid/environ" | sed -n 's/^DISPLAY=//p'    | head -1)"
+  XAUTHORITY="\$(tr '\0' '\n' < "/proc/\$pid/environ" | sed -n 's/^XAUTHORITY=//p' | head -1)"
+fi
+: "\${DISPLAY:=:0}"
+[ -n "\$XAUTHORITY" ] || XAUTHORITY="\$(ls "\$(getent passwd "\$KU" | cut -d: -f6)"/.Xauthority "\$(getent passwd "\$KU" | cut -d: -f6)"/.serverauth.* 2>/dev/null | head -1)"
+export DISPLAY XAUTHORITY
 case "\$1" in
   term) i3-msg exec xterm ;;
   *)    i3-msg workspace number "\$1" ;;
