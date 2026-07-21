@@ -226,16 +226,9 @@ fi
 ok "Host configured."
 cat <<EOF
 
-MANUAL STEP (destructive, interactive) — commit host to disk:
-  On Alpine ISO session, run:
-      setup-alpine        # keyboard, hostname, network, disk
-      # choose 'sys' install mode to write to the target disk
-  Then reboot from disk.  The .bash_profile/.xinitrc/inittab written here are
-  in the root fs and will persist. Re-run 01 on first disk boot if you used a
-  fresh disk that did not copy the apk packages.
+(On the prebuilt appliance this ran automatically at first boot; the USB
+installer already committed the system to the internal disk via
+installer/install-to-disk.sh — no manual setup-alpine step is needed.)
 
-Debian alternative: use the netinst 'expert' or preseed; autologin drop-in
-already written above.
-
-Next: ./environments/create.sh
+Next (operator): cd /opt/appliance && ./setup.sh    # Wi-Fi -> create -> isolate
 EOF

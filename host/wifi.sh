@@ -150,7 +150,7 @@ fi
 
 cat <<EOF
 
-WiFi configured. Uplink=$WIFI_IFACE. Now run/re-run:
-    ./environments/isolate.sh
-so NAT + inter-VM DROP rules bind to $WIFI_IFACE.
+WiFi configured. Uplink=$WIFI_IFACE. Next: create the VMs, then isolate (so NAT
++ inter-VM DROP rules bind to $WIFI_IFACE):
+    cd /opt/appliance && ./setup.sh      # 3) create   4) isolate
 EOF

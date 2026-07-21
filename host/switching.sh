@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# 0host/switching.sh
+# host/switching.sh
 # -----------------------------------------------------------------------------
 # Write the i3 config that turns the appliance into a 3-VM kiosk:
 #   * workspace 1 = desktop VM viewer   (boot lands here)
@@ -26,6 +26,12 @@ KIOSK_USER="${KIOSK_USER:-kiosk}"
 KIOSK_HOME="$(getent passwd "$KIOSK_USER" | cut -d: -f6)"; KIOSK_HOME="${KIOSK_HOME:-/home/$KIOSK_USER}"
 I3_DIR="$KIOSK_HOME/.config/i3"
 mkdir -p "$I3_DIR"
+# Captive-portal helper (written by host/captive-portal.sh into the kiosk home).
+# vmswitch launches it under the SPICE grab via keyd (below).
+PORTAL_SH="$KIOSK_HOME/portal-login.sh"
+# Dedicated workspaces for overlays so they are NOT hidden behind a fullscreen VM.
+WS_PORTAL=8
+WS_SHELL=9
 
 log "Writing $I3_DIR/config (per enabled environment) ..."
 # Static header (quoted heredoc keeps i3 $vars literal).
@@ -41,8 +47,10 @@ focus_follows_mouse no
 bindsym $mod+Tab workspace next
 bindsym $mod+Shift+r restart
 bindsym $mod+Shift+q kill
-# Host terminal (X runs as root -> ROOT shell). Super+Return.
-bindsym $mod+Return exec xterm
+# Terminal on a dedicated workspace so it's not hidden behind a fullscreen VM.
+# NOTE: X/i3 run as the unprivileged kiosk user, so this is a KIOSK shell, not
+# root. Root admin lives on tty2 (Ctrl+Alt+F2). Super+Return.
+bindsym $mod+Return workspace number 9; exec xterm
 for_window [class="(?i)xterm"] floating enable, border normal
 # Super+y = route a plugged YubiKey (or USB) to a chosen VM (manual fallback).
 bindsym $mod+y exec --no-startup-id xterm -T "Route YubiKey" -e HOMEDIR_APP/host/usb-to-vm.sh
@@ -111,6 +119,15 @@ EOF
   done <<EOF
 $(for_each_enabled_env)
 EOF
+
+  # Label the overlay workspaces too (Super+p portal = $WS_PORTAL, Super+Return
+  # shell = $WS_SHELL) so the trust bar shows what you're looking at there.
+  name_cases="${name_cases}    $WS_PORTAL) printf '%s' 'PORTAL' ;;
+    $WS_SHELL) printf '%s' 'SHELL' ;;
+"
+  color_cases="${color_cases}    $WS_PORTAL) printf '%s' '#f59e0b' ;;
+    $WS_SHELL) printf '%s' '#6b6b6b' ;;
+"
 
   # active-env.sh: the left module. A rounded colored "pill" with the ACTIVE env
   # name (recolors live on switch) + one dot per env. Renders via i3 events, so
@@ -192,9 +209,12 @@ padding-right = 2
 module-margin = 2
 modules-left  = env
 modules-right = cpu memory net vpn battery date
-; override-redirect = the thin bar stays ON TOP of the fullscreen VM viewers
+; override-redirect = the thin bar stays ON TOP of the fullscreen VM viewers.
+; wm-restack=i3 (NOT generic) is what actually restacks polybar above an
+; i3-fullscreen window — with 'generic' the fullscreen VM viewer covered the bar
+; and it was never visible.
 override-redirect = true
-wm-restack = generic
+wm-restack = i3
 enable-ipc = true
 
 [module/env]
@@ -320,9 +340,13 @@ fi
 : "\${DISPLAY:=:0}"
 [ -n "\$XAUTHORITY" ] || XAUTHORITY="\$(ls "\$(getent passwd "\$KU" | cut -d: -f6)"/.Xauthority "\$(getent passwd "\$KU" | cut -d: -f6)"/.serverauth.* 2>/dev/null | head -1)"
 export DISPLAY XAUTHORITY
+# term/portal switch to a dedicated EMPTY workspace first, then exec — otherwise
+# the xterm/browser opens behind the focused VM's fullscreen window and is never
+# seen. Switching away also drops SPICE's keyboard grab, so normal keys work there.
 case "\$1" in
-  term) i3-msg exec xterm ;;
-  *)    i3-msg workspace number "\$1" ;;
+  term)   i3-msg "workspace number $WS_SHELL; exec xterm" ;;
+  portal) i3-msg "workspace number $WS_PORTAL; exec $PORTAL_SH" ;;
+  *)      i3-msg workspace number "\$1" ;;
 esac
 EOF
 chmod +x /usr/local/bin/vmswitch
@@ -336,6 +360,10 @@ chmod +x /usr/local/bin/vmswitch
     echo "meta+$idx = command(/usr/local/bin/vmswitch $idx)"
   done
   echo "meta+enter = command(/usr/local/bin/vmswitch term)"
+  # Super+p (captive-portal login) must also work UNDER the SPICE grab, so route
+  # it through keyd like the workspace keys — an i3-only bindsym never fires while
+  # a guest holds the keyboard grab.
+  echo "meta+p = command(/usr/local/bin/vmswitch portal)"
 } > /etc/keyd/default.conf
 
 # Enable keyd (idempotent).
@@ -349,5 +377,5 @@ fi
 ok "Switching configured for enabled envs: $(for_each_enabled_env | awk '{printf "%s(Super+%s) ",$1,$2}'). Super+Enter = host shell."
 cat <<EOF
 
-Next: ./environments/isolate.sh
+Next (operator): create + isolate the VMs -> cd /opt/appliance && ./setup.sh
 EOF

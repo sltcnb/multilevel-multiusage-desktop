@@ -38,7 +38,7 @@ require_cmds wg wg-quick ip nft
 if [ "${WAN_IFACE:-auto}" = "auto" ]; then
   WAN_IFACE="$(ip route show default 2>/dev/null | awk '/default/ {print $5; exit}')"
 fi
-[ -n "${WAN_IFACE:-}" ] || die "WAN_IFACE unknown; run 05 first or set it in config.env."
+[ -n "${WAN_IFACE:-}" ] || die "WAN_IFACE unknown; run ./environments/isolate.sh first (or set WAN_IFACE in config.env)."
 
 mkdir -p /etc/wireguard
 

@@ -249,12 +249,28 @@ make_seed() {
   - systemctl set-default graphical.target || true
   - systemctl enable $_dm || true"
     NEED_REBOOT=1
-    # Autologin (lightdm is scriptable simply; gdm/sddm best-effort).
-    if [ "$_dm" = "lightdm" ]; then
-      de_runcmd_lines="$de_runcmd_lines
+    # Autologin the guest into the DE so the env comes up desktop-ready. Per
+    # display manager: lightdm (Seat), gdm3/gdm (daemon AutomaticLogin — this is
+    # what the Ubuntu office/gnome env uses; previously ONLY lightdm was handled,
+    # so office sat at a gdm login prompt), sddm (Autologin).
+    case "$_dm" in
+      lightdm)
+        de_runcmd_lines="$de_runcmd_lines
   - mkdir -p /etc/lightdm
-  - printf '[Seat:*]\\nautologin-user=$GUEST_USER\\nautologin-session=$_sess\\n' > /etc/lightdm/lightdm.conf"
-    fi
+  - printf '[Seat:*]\\nautologin-user=$GUEST_USER\\nautologin-session=$_sess\\n' > /etc/lightdm/lightdm.conf" ;;
+      gdm3)
+        de_runcmd_lines="$de_runcmd_lines
+  - mkdir -p /etc/gdm3
+  - printf '[daemon]\\nAutomaticLoginEnable=true\\nAutomaticLogin=$GUEST_USER\\n' > /etc/gdm3/custom.conf" ;;
+      gdm)
+        de_runcmd_lines="$de_runcmd_lines
+  - mkdir -p /etc/gdm
+  - printf '[daemon]\\nAutomaticLoginEnable=true\\nAutomaticLogin=$GUEST_USER\\n' > /etc/gdm/custom.conf" ;;
+      sddm)
+        de_runcmd_lines="$de_runcmd_lines
+  - mkdir -p /etc/sddm.conf.d
+  - printf '[Autologin]\\nUser=$GUEST_USER\\nSession=$_sess\\n' > /etc/sddm.conf.d/autologin.conf" ;;
+    esac
     log "$vm DE ($_os): $_de -> $_pk"
   fi
 
@@ -543,7 +559,11 @@ ok "All enabled VMs created."
 virsh list --all
 cat <<EOF
 
-MANUAL: first boot of each VM runs cloud-init (1-2 min). Watch with:
+MANUAL: first boot of each VM runs cloud-init, which INSTALLS the desktop
+environment over the network (ubuntu-desktop/gnome etc. — several minutes on
+first boot, then one automatic reboot into the DE). It's slow the first time by
+design; watch progress with:
     virsh console <name>     (Ctrl+] to exit)
-Next: ./host/switching.sh  then  ./environments/isolate.sh
+    # in-guest: tail -f /var/log/de-install.log   (DE package install log)
+Next: ./environments/isolate.sh   (or ./setup.sh 4)
 EOF

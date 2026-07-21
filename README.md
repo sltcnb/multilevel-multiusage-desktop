@@ -137,7 +137,12 @@ password immediately with `passwd`).
 ```sh
 cd /opt/appliance
 vi config.env        # set Wi-Fi, guest password, per-env options
+./setup.sh           # numbered menu of the steps you launch (Wi-Fi/create/isolate)
 ```
+
+`setup.sh` is the easy path — it lists only the operator steps, in order, so you
+don't have to remember which script to run. Each step below is also runnable
+directly; `./setup.sh 3` runs step 3.
 
 If you're on Wi-Fi, set `WIFI_SSID` / `WIFI_PSK` / `WIFI_COUNTRY` and run
 `./host/wifi.sh` (the passphrase is hashed, never stored in the clear). On wired
@@ -167,8 +172,17 @@ Then build and lock down the VMs:
 `isolate.sh` prints PASS/FAIL for every check — each VM must reach the internet
 and must **not** reach either of the other two.
 
+Each VM's first boot installs its full desktop environment over the network
+(GNOME on the Ubuntu office VM, etc.), which takes several minutes and ends in
+one automatic reboot into the desktop — so the first boot is slow by design.
+Watch it with `virsh console <env>` (then in-guest `tail -f /var/log/de-install.log`).
+
+To change a guest's password later without rebuilding, use
+`./environments/set-guest-password.sh <env>` (live, via the guest agent).
+
 Reboot to confirm the full experience: you land on the office VM full-screen and
-`Super+1/2/3` switches between them.
+`Super+1/2/3` switches between them. `Super+Return` opens a terminal and
+`Super+p` the captive portal — both work even while a VM holds the keyboard.
 
 The one ordering rule that matters: **Wi-Fi → portal login → create → isolate.**
 Guests need internet on first boot, which needs the portal cleared, which needs

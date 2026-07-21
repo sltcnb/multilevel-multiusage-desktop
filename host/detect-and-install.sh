@@ -16,7 +16,8 @@
 #     apk-based rootfs tar). Kept as instructions because a truly flashable
 #     image is host-arch specific and best done with Alpine's aports/mkimage.
 #
-# Run order: 01 -> 02 -> 03 -> 04 -> 05.  See README.
+# First-boot order (automatic): detect-and-install -> configure -> harden ->
+# switching -> wifi -> captive-portal. Operator then runs ./setup.sh. See README.
 # =============================================================================
 set -euo pipefail
 
@@ -243,6 +244,8 @@ ok "Host build staged. Detected values:"
 cat "$CONFIG_ENV"
 cat <<EOF
 
-Next: run ./host/configure.sh  (commits host to disk + autologin/startx)
-      then 03/04/05 in order.  See README for MANUAL steps.
+The rest of the host base (configure, harden, switching, Wi-Fi) is applied
+AUTOMATICALLY at first boot. When the desktop is up, build the VMs from a root
+shell on tty2 (Ctrl+Alt+F2):
+    cd /opt/appliance && ./setup.sh        # numbered menu: Wi-Fi -> create -> isolate
 EOF

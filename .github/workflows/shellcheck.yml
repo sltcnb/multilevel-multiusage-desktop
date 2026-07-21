@@ -27,6 +27,7 @@ jobs:
         run: |
           # -x follows sourced files (lib/common.sh); fail on warnings and above.
           shellcheck -x -S warning \
+            setup.sh \
             lib/*.sh \
             host/*.sh \
             environments/*.sh \

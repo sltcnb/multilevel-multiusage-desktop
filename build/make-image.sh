@@ -6,8 +6,10 @@
 #   * all host packages preinstalled (kvm/qemu/libvirt/virt-viewer/xorg/i3/nft)
 #   * this repo's scripts baked into /opt/appliance
 #   * nested virt + autologin + auto-startx already wired
-#   * a one-shot first-boot service that runs 01 -> 02 -> 04 (idempotent),
-#     leaving 03 (VM creation, big downloads) and 05 (firewall+verify) to you.
+#   * a one-shot first-boot service that runs the host base (detect-and-install,
+#     configure, harden, switching, wifi, captive-portal) idempotently, leaving
+#     VM creation (environments/create.sh) and firewall+verify (isolate.sh) — the
+#     ./setup.sh steps — to you.
 #
 # HOW IT WORKS (macOS/darwin host):
 #   Building an Alpine root filesystem + bootloader needs Linux + loop devices.
@@ -56,7 +58,7 @@ echo "[*] Packing appliance tree ..."
 # Tar the whole tree (preserving the lib/host/environments/installer layout) so
 # it extracts to /opt/appliance with the same structure the scripts expect.
 APPLIANCE_TAR_B64="$(tar -czf - \
-  config.env.example README.md \
+  config.env.example README.md setup.sh \
   lib host environments installer build \
   | base64 | tr -d '\n')"
 
@@ -149,7 +151,7 @@ fi
 # 2. Unpack repo scripts into /opt/appliance.
 mkdir -p /opt/appliance
 echo "$APPLIANCE_TAR_B64" | base64 -d | tar -xzf - -C /opt/appliance
-chmod +x /opt/appliance/*/*.sh 2>/dev/null || true
+chmod +x /opt/appliance/*/*.sh /opt/appliance/setup.sh 2>/dev/null || true
 
 # 3. Create the UNPRIVILEGED kiosk user (ANSSI: the desktop must not run as root).
 #    'kiosk' can only view/launch the VMs (member of libvirt/kvm) and drive its
@@ -221,7 +223,8 @@ auto eth0
 iface eth0 inet dhcp
 NET
 
-# 6. First-boot one-shot: run 01 (hw detect/nested), 02 (host cfg), 04 (i3).
+# 6. First-boot one-shot: run detect-and-install (hw detect/nested), configure
+#    (host cfg), harden, switching (i3), wifi, captive-portal.
 #    Idempotent; disables itself after success. 03 (VM downloads) + 05
 #    (firewall+verify) are left for the operator (need network + time).
 cat > /etc/init.d/appliance-firstboot <<'FB'

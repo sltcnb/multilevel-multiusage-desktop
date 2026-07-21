@@ -19,10 +19,9 @@
 # UX: kiosk is unbroken except during the brief portal login. Press Super+p,
 #   complete Entra OAuth + MFA once, close the browser, back to the VMs.
 #
-# BOOTSTRAP ORDER (important): the portal must be cleared BEFORE 03 (VM image
-#   downloads) and guest cloud-init, which need internet on first boot:
-#     firstboot: 01 -> 02 -> 06 -> 04 -> 07
-#     operator : Super+p (portal login) -> ./environments/create.sh -> ./05-...
+# BOOTSTRAP ORDER (important): the portal must be cleared BEFORE creating the VMs
+#   — their cloud-init needs internet on first boot:
+#     operator: Super+p (portal login) -> ./setup.sh 3 (create) -> ./setup.sh 4 (isolate)
 # =============================================================================
 set -euo pipefail
 
