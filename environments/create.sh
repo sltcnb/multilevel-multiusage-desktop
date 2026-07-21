@@ -175,16 +175,19 @@ make_seed() {
   NEED_REBOOT=0
   _os="$(env_val "$vm" OS arch)"; _de="$(env_val "$vm" DE none)"
 
-  # Admin group for the guest user, per distro. cloud-init passes groups straight
-  # to `useradd --groups` and does NOT create missing ones, so a group absent on
-  # the target distro makes useradd abort and the guest user is never created
-  # (breaks login, chpasswd and lightdm autologin). apt images ship sudo/adm but
-  # NOT wheel; the Arch image ships wheel but NOT sudo — so pick per os_family.
-  # (Privilege itself comes from the `sudo:` directive below, not the group.)
+  # Admin group for the guest user, per distro (apt images ship sudo/adm but NOT
+  # wheel; the Arch image ships wheel but NOT sudo). We deliberately do NOT put
+  # this in the cloud-init user's `groups:` — cloud-init passes groups straight to
+  # `useradd --groups` and a missing/finicky group there makes useradd ABORT, so
+  # the guest user is never created (that was the "no operator, root only" bug).
+  # Instead the user is created group-free (guaranteed) and added to the admin
+  # group best-effort in runcmd afterwards. Privilege comes from `sudo:` anyway.
   case "$(os_family "$_os")" in
-    apt) _grp="sudo, adm" ;;
-    *)   _grp="wheel" ;;
+    apt) _grp_csv="sudo,adm" ;;
+    *)   _grp_csv="wheel" ;;
   esac
+  de_runcmd_lines="$de_runcmd_lines
+  - sh -c 'usermod -aG $_grp_csv $GUEST_USER 2>/dev/null || true'"
 
   # ---- Custom APT mirror / caching proxy (apt-family guests only) -----------
   # Emit a cloud-init top-level `apt:` block when APT_MIRROR/APT_PROXY are set.
@@ -236,18 +239,24 @@ make_seed() {
           *) warn "Unknown DE '$_de'; defaulting to xfce4."; _pk="xorg xfce4 lightdm lightdm-gtk-greeter"; _dm="lightdm"; _sess="xfce" ;;
         esac ;;
     esac
-    # Install the DE in runcmd with RETRIES + a log (not the `packages:` module,
-    # which fails SILENTLY if the network isn't up at the config stage). The log
-    # at /var/log/de-install.log makes a failed install visible + diagnosable.
+    # Install the DE via a SELF-HEALING systemd oneshot, not a one-time runcmd.
+    # The DE download needs internet, which on first boot often ISN'T there yet
+    # (captive portal not cleared, Wi-Fi still associating) — and a runcmd only
+    # runs ONCE, so a first-boot failure left the VM desktop-less forever. This
+    # service retries on every boot (and every 30s) until the repos are reachable,
+    # logs to /var/log/de-install.log, then disables itself. So "no internet at
+    # first boot" self-heals the moment the portal is cleared.
     if [ "$(os_family "$_os")" = "apt" ]; then
       _inst="apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y $_pk"
     else
       _inst="pacman -Sy --noconfirm --needed $_pk"
     fi
     de_runcmd_lines="$de_runcmd_lines
-  - sh -c 'for i in 1 2 3 4 5; do { $_inst ; } >>/var/log/de-install.log 2>&1 && { echo OK >>/var/log/de-install.log; break; }; echo \"retry \$i\" >>/var/log/de-install.log; sleep 15; done'
-  - systemctl set-default graphical.target || true
-  - systemctl enable $_dm || true"
+  - printf '#!/bin/sh\\nexec >>/var/log/de-install.log 2>&1\\n[ -f /var/lib/appliance-de.done ] && exit 0\\necho \"[de] attempt\"\\n$_inst || { echo \"[de] install failed (no repos/internet? portal not cleared?) - retrying next boot\"; exit 1; }\\nsystemctl set-default graphical.target || true\\nsystemctl enable $_dm || true\\nsystemctl start $_dm || true\\ntouch /var/lib/appliance-de.done\\nsystemctl disable appliance-de.service || true\\necho \"[de] OK\"\\n' > /usr/local/sbin/appliance-install-de.sh
+  - chmod +x /usr/local/sbin/appliance-install-de.sh
+  - printf '[Unit]\\nDescription=Appliance desktop install (retries until repos reachable)\\nAfter=network-online.target\\nWants=network-online.target\\n[Service]\\nType=oneshot\\nExecStart=/usr/local/sbin/appliance-install-de.sh\\nRestart=on-failure\\nRestartSec=30\\n[Install]\\nWantedBy=multi-user.target\\n' > /etc/systemd/system/appliance-de.service
+  - systemctl daemon-reload || true
+  - systemctl enable --now appliance-de.service || true"
     NEED_REBOOT=1
     # Autologin the guest into the DE so the env comes up desktop-ready. Per
     # display manager: lightdm (Seat), gdm3/gdm (daemon AutomaticLogin — this is
@@ -346,7 +355,6 @@ EOF
 hostname: $host
 users:
   - name: $GUEST_USER
-    groups: [$_grp]
     sudo: ALL=(ALL) NOPASSWD:ALL
     lock_passwd: false
     shell: /bin/bash
@@ -448,9 +456,25 @@ create_vm() {
   name="$1"; variant="$2"; net="$3"; vcpu="$4"; ram="$5"; disk="$6"; base="$7"; host="$8"
 
   if virsh dominfo "$name" >/dev/null 2>&1; then
-    warn "VM $name already exists — skipping create (idempotent)."
-    virsh autostart "$name" 2>/dev/null || true
-    return
+    # RECREATE lets you actually rebuild a VM to pick up cloud-init changes.
+    #   RECREATE=1        -> rebuild every VM
+    #   RECREATE="office" -> rebuild just these (space-separated) envs
+    # Otherwise create is idempotent (existing VMs are left untouched).
+    case " ${RECREATE:-} " in
+      *" 1 "*|*" all "*|*" $name "*)
+        warn "$name: RECREATE -> destroying + undefining the existing VM ..."
+        virsh destroy "$name" 2>/dev/null || true
+        virsh undefine "$name" --nvram --remove-all-storage 2>/dev/null \
+          || virsh undefine "$name" --remove-all-storage 2>/dev/null \
+          || virsh undefine "$name" 2>/dev/null || true
+        rm -f "$IMAGES_DIR/${name}.qcow2" "$IMAGES_DIR/${name}-seed.iso" 2>/dev/null || true
+        ;;
+      *)
+        warn "VM $name already exists — skipping (idempotent). Set RECREATE=$name (or RECREATE=1) to rebuild."
+        virsh autostart "$name" 2>/dev/null || true
+        return
+        ;;
+    esac
   fi
 
   vmdisk="$IMAGES_DIR/${name}.qcow2"
