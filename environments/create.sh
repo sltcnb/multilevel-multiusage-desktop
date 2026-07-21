@@ -483,6 +483,7 @@ create_vm() {
   # sets). libvirt holds the secret to start the domain; scrub-secrets blanks
   # <env>_DISK_PASS from config afterward. EXPERIMENTAL.
   disk_opts="path=$vmdisk,format=qcow2,bus=virtio"
+  ENC_INJECT=0
   if [ "$(env_val "$name" ENCRYPT_DISK 0)" = "1" ]; then
     dpass="$(env_val "$name" DISK_PASS)"
     if [ -z "$dpass" ] || [ "$dpass" = "generate" ]; then
@@ -509,7 +510,12 @@ SX
     virsh secret-define "$sec_xml" >/dev/null 2>&1 || true
     virsh secret-set-value "$secuuid" --base64 "$(printf '%s' "$dpass" | base64)" >/dev/null 2>&1 || true
     rm -f "$sec_xml" "$secpath"
-    disk_opts="path=$vmdisk,format=qcow2,bus=virtio,driver.type=qcow2,encryption.format=luks,encryption.secret.type=passphrase,encryption.secret.uuid=$secuuid"
+    # NOTE: do NOT put encryption.* on --disk — older virt-install rejects those
+    # suboptions ("unknown --disk options: encryption.format ..."). Describe the
+    # disk plainly and inject the <encryption> element into the domain XML below
+    # (version-independent). ENC_INJECT drives that path.
+    disk_opts="path=$vmdisk,format=qcow2,bus=virtio"
+    ENC_INJECT=1
   else
     log "Preparing disk for $name (${disk}G) ..."
     qemu-img create -f qcow2 -F qcow2 -b "$base" "$vmdisk"   # backing = base cloud img (thin)
@@ -521,7 +527,13 @@ SX
   log "virt-install $name (vcpu=$vcpu ram=${ram}MB net=$net) ..."
   # --import: boot the prebuilt image; no OS installer runs. cloud-init in the
   # image consumes the NoCloud seed on first boot => unattended provisioning.
-  virt-install \
+  # The org.qemu.guest_agent.0 channel lets the host talk to qemu-guest-agent in
+  # the guest — needed for isolate.sh's in-guest verification.
+  # TODO(GPU-passthrough): replace --graphics spice/--video qxl with
+  #   --graphics none --hostdev <PCI-of-GPU>,address.type=pci  (VFIO)
+  # and bind the GPU to vfio-pci on the host. Only ONE VM can own the single
+  # physical GPU at a time on one monitor.
+  set -- \
     --name "$name" \
     --os-variant "$variant" \
     --memory "$ram" \
@@ -537,12 +549,27 @@ SX
     --channel unix,target.type=virtio,target.name=org.qemu.guest_agent.0 \
     --noautoconsole \
     --wait 0
-    # The org.qemu.guest_agent.0 channel lets the host talk to qemu-guest-agent
-    # in the guest — needed for isolate.sh's in-guest verification.
-    # TODO(GPU-passthrough): replace --graphics spice/--video qxl with
-    #   --graphics none --hostdev <PCI-of-GPU>,address.type=pci  (VFIO)
-    # and bind the GPU to vfio-pci on the host. Only ONE VM can own the single
-    # physical GPU at a time on one monitor.
+
+  if [ "$ENC_INJECT" = "1" ]; then
+    # Encrypted: generate the domain XML WITHOUT starting (--print-xml), inject
+    # the <encryption> element into the main disk (identified by its source path),
+    # then define + start. Works regardless of virt-install's --disk suboption
+    # support. Booting a LUKS qcow2 without this element would fail to read root.
+    log "$name: defining with injected LUKS <encryption> (secret $secuuid) ..."
+    domxml="$(virt-install "$@" --print-xml)" \
+      || die "$name: virt-install --print-xml failed."
+    printf '%s\n' "$domxml" | awk -v f="$vmdisk" -v uu="$secuuid" '
+      { print }
+      index($0, "source") && index($0, "file=") && index($0, f) {
+        print "      <encryption format='"'"'luks'"'"'>"
+        print "        <secret type='"'"'passphrase'"'"' uuid='"'"'" uu "'"'"'/>"
+        print "      </encryption>"
+      }' | virsh define /dev/stdin >/dev/null \
+        || die "$name: virsh define (encrypted) failed."
+    virsh start "$name" || die "$name: virsh start (encrypted) failed — check the disk passphrase/secret."
+  else
+    virt-install "$@"
+  fi
 
   virsh autostart "$name"
   ok "$name created + autostart enabled."
