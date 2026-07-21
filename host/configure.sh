@@ -199,8 +199,19 @@ if [ "${YUBIKEY_ROUTER:-1}" = "1" ]; then
   APP_DIR="$HERE/.."; APP_DIR="$(cd "$APP_DIR" && pwd)"
   cat > /usr/local/bin/yubikey-plugged <<EOF
 #!/bin/sh
-export DISPLAY=:0
-export XAUTHORITY="$KIOSK_HOME/.Xauthority"
+# Runs as ROOT from udev. To pop the chooser on the kiosk X display we need its
+# DISPLAY + XAUTHORITY. startx stores the cookie in ~/.serverauth.NNNN, NOT
+# ~/.Xauthority (the exact trap vmswitch was fixed for in 281e7e3), so read the
+# REAL values from the running i3 process env; fall back to globbing the home.
+KU="$KIOSK_USER"
+pid="\$(pgrep -u "\$KU" -x i3 | head -1)"
+if [ -n "\$pid" ] && [ -r "/proc/\$pid/environ" ]; then
+  DISPLAY="\$(tr '\0' '\n' < "/proc/\$pid/environ" | sed -n 's/^DISPLAY=//p'    | head -1)"
+  XAUTHORITY="\$(tr '\0' '\n' < "/proc/\$pid/environ" | sed -n 's/^XAUTHORITY=//p' | head -1)"
+fi
+: "\${DISPLAY:=:0}"
+[ -n "\$XAUTHORITY" ] || XAUTHORITY="\$(ls "$KIOSK_HOME"/.Xauthority "$KIOSK_HOME"/.serverauth.* 2>/dev/null | head -1)"
+export DISPLAY XAUTHORITY
 setsid xterm -geometry 60x18 -T "Route YubiKey" -e "$APP_DIR/host/usb-to-vm.sh" >/dev/null 2>&1 &
 EOF
   chmod +x /usr/local/bin/yubikey-plugged

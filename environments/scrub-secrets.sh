@@ -37,8 +37,14 @@ done
 # attached to the domains as cdrom; set SCRUB_SEEDS=1 to detach+remove.
 if [ "${SCRUB_SEEDS:-0}" = "1" ]; then
   for_each_enabled_env | while read -r env _; do
-    virsh detach-disk "$env" sda --config 2>/dev/null || true
-    rm -f "$IMAGES_DIR/${env}-seed.iso" 2>/dev/null || true
+    seed="$IMAGES_DIR/${env}-seed.iso"
+    # The seed cdrom's target dev is auto-assigned by libvirt and is NOT always
+    # 'sda' (q35 -> sata sda, i440fx -> ide hda). Detaching a hardcoded 'sda'
+    # silently no-ops on i440fx, then rm leaves the domain XML pointing at a
+    # now-missing ISO and `virsh start` fails. Discover the real target first.
+    tgt="$(virsh domblklist "$env" 2>/dev/null | awk -v f="$seed" '$NF==f {print $3; exit}')"
+    [ -n "$tgt" ] && virsh detach-disk "$env" "$tgt" --config 2>/dev/null || true
+    rm -f "$seed" 2>/dev/null || true
   done
   log "Seed ISOs detached + removed (SCRUB_SEEDS=1)."
 fi

@@ -50,6 +50,14 @@ net.ipv4.conf.all.accept_source_route=0
 net.ipv4.conf.all.log_martians=1
 net.ipv6.conf.all.accept_redirects=0
 net.ipv6.conf.all.accept_source_route=0
+# --- no IPv6 routing through the host ---
+# The appliance is IPv4-only by design (isolated libvirt nets define only v4;
+# egress + inter-env DROP rules in environments/isolate.sh are all `ip ...`,
+# i.e. v4-family). If IPv6 forwarding were ever on, a whitelist/isolated env's
+# v6 traffic would bypass those rules entirely (the forward chain policy is
+# accept). Keep v6 forwarding off so the egress lock cannot silently open for v6.
+net.ipv6.conf.all.forwarding=0
+net.ipv6.conf.default.forwarding=0
 EOF
 # Apply now (ignore keys the running kernel lacks).
 sysctl -p /etc/sysctl.d/90-appliance-hardening.conf 2>/dev/null || \

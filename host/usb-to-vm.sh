@@ -33,6 +33,12 @@ echo; echo "Send USB device $vp to which environment?"
 i=0; for e in $envs; do i=$((i+1)); printf '  %s) %s\n' "$i" "$e"; done
 printf 'choice [1-%s] (or q): ' "$i"; read -r c
 [ "$c" = "q" ] && exit 0
+# Validate BEFORE using $c as an awk field index: an empty/non-numeric choice
+# coerces to 0, so `$n` prints $0 (the whole env list) — a non-empty string that
+# slips past the guard below and detaches the device from every env, attaching to
+# none. Reject anything that is not a decimal in 1..$i.
+case "$c" in ''|*[!0-9]*) echo "invalid choice"; sleep 2; exit 1 ;; esac
+{ [ "$c" -ge 1 ] && [ "$c" -le "$i" ]; } || { echo "invalid choice"; sleep 2; exit 1; }
 target="$(echo "$envs" | awk -v n="$c" '{print $n}')"
 [ -n "$target" ] || { echo "invalid choice"; sleep 2; exit 1; }
 

@@ -149,11 +149,13 @@ VM gets online through the host (they all share the host's single connection via
 NAT). Do this **before** creating the VMs, because their first boot needs
 internet.
 
-Before the first run, pin the SHA256 of each base cloud image you'll actually
-use (`UBUNTU_IMG_SHA256` / `ARCH_IMG_SHA256` / `DEBIAN_IMG_SHA256` in
-`config.env` — see the comments there for where to get the vendor's published
-checksum). `create.sh` fails closed and refuses to use an image whose hash
-isn't pinned or doesn't match, by design.
+Before the first run, it's recommended to pin the SHA256 of each base cloud
+image you'll actually use (`UBUNTU_IMG_SHA256` / `ARCH_IMG_SHA256` /
+`DEBIAN_IMG_SHA256` in `config.env` — see the comments there for where to get
+the vendor's published checksum). Pinning is optional by default: an unset hash
+downloads without an integrity check (with a warning), while a set hash is
+strictly verified and a mismatch deletes the file and aborts. Set
+`REQUIRE_IMG_SHA256=1` to make a missing pin a hard error.
 
 Then build and lock down the VMs:
 

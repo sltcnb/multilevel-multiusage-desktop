@@ -68,7 +68,10 @@ resolve_secret() {
     _v="$(gen_secret)"
     set_kv "$_k" "$_v"
     umask 077; printf '%s=%s\n' "$_k" "$_v" >> /root/generated-secrets.txt 2>/dev/null || true
-    warn "Generated $_k -> saved to /root/generated-secrets.txt (record it): $_v"
+    # Do NOT echo the value: warn() goes to stderr, which on the unattended
+    # first-boot service lands on the tty1 (kiosk) console and in rc.log. The
+    # value lives in the root-only note file; the operator reads it from there.
+    warn "Generated $_k -> saved to /root/generated-secrets.txt (record it)."
   fi
   printf '%s' "$_v"
 }

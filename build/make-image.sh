@@ -282,18 +282,28 @@ passwd -u root 2>/dev/null || true
 #    by the UEFI *Shell*, which real firmware does not auto-run). Firmware boots
 #    the removable fallback /EFI/BOOT/BOOTX64.EFI instead — so install GRUB there
 #    explicitly. Inside this chroot, /boot IS the mounted ESP (vfat).
-if [ -f /boot/startup.nsh ]; then
-  # Derive the root filesystem UUID from the cmdline the tool already wrote.
-  ruuid="$(grep -o 'root=UUID=[^ ]*' /boot/startup.nsh | head -1 | cut -d= -f3)"
-  # Install grub to the ESP in removable mode (no NVRAM writes — impossible in a
-  # build container anyway).
-  grub-install --target=x86_64-efi --efi-directory=/boot --boot-directory=/boot \
-    --removable --no-nvram 2>&1 || echo "WARN: grub-install failed"
-  # Hand-write a grub.cfg. Kernel + initramfs live at the ESP root (/boot is the
-  # ESP), so grub paths are ESP-relative (/vmlinuz-lts), while the kernel's
-  # root= points at the ext4 root by UUID.
-  mkdir -p /boot/grub
-  cat > /boot/grub/grub.cfg <<GCFG
+# FAIL CLOSED: the whole removable-UEFI bootloader install depends on this
+# upstream artifact. If alpine-make-vm-image (unpinned AMVI_REF=master) ever stops
+# writing /boot/startup.nsh, silently skipping this step would emit an image that
+# builds fine but is NON-BOOTABLE on real firmware (no /EFI/BOOT/BOOTX64.EFI). Turn
+# that into a loud build failure instead. (Pin AMVI_REF to a known-good tag to also
+# guard against the format changing under you.)
+if [ ! -f /boot/startup.nsh ]; then
+  echo "ERROR: alpine-make-vm-image did not write /boot/startup.nsh — cannot derive the removable UEFI bootloader or root UUID. The image would be NON-BOOTABLE. Aborting (pin/verify AMVI_REF)." >&2
+  exit 1
+fi
+# Derive the root filesystem UUID from the cmdline the tool already wrote.
+ruuid="$(grep -o 'root=UUID=[^ ]*' /boot/startup.nsh | head -1 | cut -d= -f3)"
+[ -n "$ruuid" ] || { echo "ERROR: could not parse root=UUID= from /boot/startup.nsh — aborting (image would be non-bootable)." >&2; exit 1; }
+# Install grub to the ESP in removable mode (no NVRAM writes — impossible in a
+# build container anyway). A failure here means no bootloader: fatal, not a warn.
+grub-install --target=x86_64-efi --efi-directory=/boot --boot-directory=/boot \
+  --removable --no-nvram 2>&1 || { echo "ERROR: grub-install failed — image would be non-bootable. Aborting." >&2; exit 1; }
+# Hand-write a grub.cfg. Kernel + initramfs live at the ESP root (/boot is the
+# ESP), so grub paths are ESP-relative (/vmlinuz-lts), while the kernel's
+# root= points at the ext4 root by UUID.
+mkdir -p /boot/grub
+cat > /boot/grub/grub.cfg <<GCFG
 set timeout=2
 set default=0
 menuentry "Appliance (Alpine LTS)" {
@@ -302,7 +312,6 @@ menuentry "Appliance (Alpine LTS)" {
     initrd /initramfs-lts
 }
 GCFG
-fi
 PROFILE
 chmod +x /work/profile.sh
 

@@ -13,7 +13,7 @@
 #
 # WHAT THIS INSTALLS:
 #   * a minimal host browser (firefox-esr), used ONLY for the portal
-#   * /root/portal-login.sh : detects the portal and opens it in the browser
+#   * <kiosk-home>/portal-login.sh : detects the portal and opens it in the browser
 #   * an i3 keybinding (Super+p) on a scratch workspace to launch it
 #
 # UX: kiosk is unbroken except during the brief portal login. Press Super+p,
@@ -34,8 +34,21 @@ load_config
 
 # Overridable: connectivity-check URL that returns 204 when NOT behind a portal.
 : "${PORTAL_PROBE_URL:=http://connectivitycheck.gstatic.com/generate_204}"
-# Browser command (overridable). firefox-esr baked into the image.
-: "${PORTAL_BROWSER:=firefox}"
+# Browser command (overridable). The image bakes firefox-esr, whose Alpine binary
+# is "firefox-esr" (there is NO bare "firefox"). Prefer it, fall back to firefox.
+if [ -z "${PORTAL_BROWSER:-}" ]; then
+  if command -v firefox-esr >/dev/null 2>&1; then PORTAL_BROWSER=firefox-esr
+  else PORTAL_BROWSER=firefox; fi
+fi
+
+# The desktop runs as the UNPRIVILEGED kiosk user; its i3 (host/switching.sh)
+# reads $KIOSK_HOME/.config/i3/config and execs helpers as that user. Writing the
+# binding to /root/.config/i3/config (never created) and the helper to /root
+# (mode 0700, kiosk can't traverse) meant Super+p silently did nothing. Target the
+# kiosk home instead.
+KIOSK_USER="${KIOSK_USER:-kiosk}"
+KIOSK_HOME="$(getent passwd "$KIOSK_USER" | cut -d: -f6)"; KIOSK_HOME="${KIOSK_HOME:-/home/$KIOSK_USER}"
+PORTAL_SH="$KIOSK_HOME/portal-login.sh"
 
 # -----------------------------------------------------------------------------
 # 1. Ensure a browser exists (idempotent). Only meaningful when using WiFi;
@@ -57,15 +70,15 @@ fi
 #    Otherwise a portal is intercepting; open the effective (redirected) URL so
 #    the browser lands straight on the Entra login.
 # -----------------------------------------------------------------------------
-log "Writing /root/portal-login.sh ..."
-cat > /root/portal-login.sh <<EOF
+log "Writing $PORTAL_SH ..."
+cat > "$PORTAL_SH" <<EOF
 #!/bin/sh
 # Captive-portal login helper. Opens the portal in a browser for interactive
 # Entra/OAuth sign-in. NAT means authenticating this host MAC frees all VMs.
 PROBE="$PORTAL_PROBE_URL"
 BROWSER="$PORTAL_BROWSER"
 EOF
-cat >> /root/portal-login.sh <<'EOF'
+cat >> "$PORTAL_SH" <<'EOF'
 
 # Are we already online (portal cleared)?
 code="$(curl -s -o /dev/null -w '%{http_code}' -m 5 "$PROBE" || echo 000)"
@@ -83,31 +96,35 @@ portal_url="$(curl -s -o /dev/null -w '%{redirect_url}' -m 5 "$PROBE" || true)"
 # Launch the browser on the portal. User completes Entra OAuth + MFA here.
 exec "$BROWSER" --new-window "$portal_url"
 EOF
-chmod +x /root/portal-login.sh
+chmod +x "$PORTAL_SH"
+chown "$KIOSK_USER:$KIOSK_USER" "$PORTAL_SH" 2>/dev/null || true
 
 # -----------------------------------------------------------------------------
 # 3. Add the i3 keybinding (Super+p) idempotently. Uses a scratch workspace so
 #    the login browser floats over the kiosk without disturbing VM workspaces.
 # -----------------------------------------------------------------------------
-I3_CFG="/root/.config/i3/config"
+I3_CFG="$KIOSK_HOME/.config/i3/config"
 if [ -f "$I3_CFG" ]; then
   if ! grep -q 'portal-login.sh' "$I3_CFG"; then
     log "Adding Super+p captive-portal binding to i3 config ..."
-    cat >> "$I3_CFG" <<'EOF'
+    # Unquoted heredoc: i3's own vars are \$-escaped (kept literal), $PORTAL_SH
+    # expands to the kiosk-reachable helper path.
+    cat >> "$I3_CFG" <<EOF
 
 # --- Captive-portal login (Entra/OAuth) -------------------------------------
 # Super+p opens the portal in a browser on a floating scratch window.
 # Authenticate once (NAT => all VMs get online through the host MAC).
-set $wsportal "portal"
-bindsym $mod+p workspace $wsportal; exec --no-startup-id /root/portal-login.sh
+set \$wsportal "portal"
+bindsym \$mod+p workspace \$wsportal; exec --no-startup-id $PORTAL_SH
 # Let the browser float and NOT be forced fullscreen like the VM viewers.
 for_window [class="(?i)firefox"] floating enable, border normal
 EOF
+    chown "$KIOSK_USER:$KIOSK_USER" "$I3_CFG" 2>/dev/null || true
   else
     log "i3 portal binding already present."
   fi
 else
-  warn "i3 config not found yet — run 0host/switching.sh first, then re-run host/captive-portal.sh."
+  warn "i3 config not found yet — run host/switching.sh first, then re-run host/captive-portal.sh."
 fi
 
 ok "Captive-portal login configured. Press Super+p to authenticate the WiFi."

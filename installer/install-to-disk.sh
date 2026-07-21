@@ -182,11 +182,28 @@ G
   ok "ENCRYPTED install complete (LUKS2). You'll enter the passphrase at each boot."
 else
   # --- Default: unencrypted dd-clone (fast, byte-identical to the tested USB) --
-  log "Cloning /dev/$usb_disk -> /dev/$target (~4G, ~1-3 min) ..."
+  # Copy ONLY the used extent, not the whole physical USB. The flashed image is
+  # only IMG_SIZE (~4G): its GPT + partitions live in the first ~4G and the rest
+  # of a larger stick is empty. dd'ing the whole device to EOF would both waste
+  # time and — critically — FAIL with ENOSPC when the USB is bigger than the
+  # target internal disk (e.g. 64G stick -> 32G eMMC), leaving it unbootable.
+  # Bound the copy to (last-partition end + secondary GPT), rounded up to bs.
+  ddcount=""
+  last_end="$(partx -g -o END "/dev/$usb_disk" 2>/dev/null | tr -d ' ' | sort -n | tail -1)"
+  if [ -n "$last_end" ] && [ "$last_end" -gt 0 ] 2>/dev/null; then
+    copy_bytes=$(( (last_end + 1 + 33) * 512 ))          # +33 sectors = backup GPT
+    count=$(( (copy_bytes + 4194304 - 1) / 4194304 ))    # ceil to 4MiB blocks
+    ddcount="count=$count"
+    log "Cloning ~$(( count * 4 ))MiB (used extent) /dev/$usb_disk -> /dev/$target ..."
+  else
+    warn "Could not determine used extent; cloning the whole USB device (may be slow / may not fit)."
+    log "Cloning /dev/$usb_disk -> /dev/$target ..."
+  fi
   sync
   # NOTE: busybox dd (Alpine) does NOT support status=progress — it would fail
   # immediately. Run dd in the background with a dot heartbeat; capture errors.
-  dd if="/dev/$usb_disk" of="/dev/$target" bs=4M conv=fsync 2>/tmp/dd.err &
+  # shellcheck disable=SC2086  # $ddcount is an intentional single word or empty
+  dd if="/dev/$usb_disk" of="/dev/$target" bs=4M $ddcount conv=fsync 2>/tmp/dd.err &
   ddpid=$!
   while kill -0 "$ddpid" 2>/dev/null; do printf '.'; sleep 2; done
   printf '\n'

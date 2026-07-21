@@ -36,7 +36,7 @@ mkdir -p "$IMAGES_DIR" "$CACHE_DIR"
 : "${DEBIAN_IMG_URL:=https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.qcow2}"
 
 # -----------------------------------------------------------------------------
-# Base image integrity pinning (REQUIRED per enabled OS — supply-chain).
+# Base image integrity pinning (OPTIONAL but recommended — supply-chain).
 #   The URLs above are plain HTTPS to third-party mirrors/CDNs with no
 #   signature check of their own; a compromised mirror, a MITM, or a stale/
 #   poisoned local cache would otherwise be trusted blindly. fetch() below
@@ -157,6 +157,12 @@ make_seed() {
   vm="$1"; host="$2"
   seed_dir="$CACHE_DIR/seed-$vm"
   mkdir -p "$seed_dir"
+  # user-data carries the guest+root passwords in PLAINTEXT. $CACHE_DIR defaults
+  # to /var/cache/appliance-build (mkdir 0755) and `cat >` writes 0644, so any
+  # local account — including the unprivileged kiosk desktop user — could read
+  # them. Lock the dir to root-only and write the seed files under umask 077;
+  # the plaintext user-data is shredded once the ISO is built (below).
+  chmod 700 "$seed_dir" 2>/dev/null || true
 
   # ---- Desktop environment (config <env>_DE) --------------------------------
   # Cloud-init installs the chosen DE + display manager + autologin so the env
@@ -168,6 +174,17 @@ make_seed() {
   de_runcmd_lines="  - systemctl enable --now qemu-guest-agent || true"
   NEED_REBOOT=0
   _os="$(env_val "$vm" OS arch)"; _de="$(env_val "$vm" DE none)"
+
+  # Admin group for the guest user, per distro. cloud-init passes groups straight
+  # to `useradd --groups` and does NOT create missing ones, so a group absent on
+  # the target distro makes useradd abort and the guest user is never created
+  # (breaks login, chpasswd and lightdm autologin). apt images ship sudo/adm but
+  # NOT wheel; the Arch image ships wheel but NOT sudo — so pick per os_family.
+  # (Privilege itself comes from the `sudo:` directive below, not the group.)
+  case "$(os_family "$_os")" in
+    apt) _grp="sudo, adm" ;;
+    *)   _grp="wheel" ;;
+  esac
 
   # ---- Custom APT mirror / caching proxy (apt-family guests only) -----------
   # Emit a cloud-init top-level `apt:` block when APT_MIRROR/APT_PROXY are set.
@@ -303,6 +320,7 @@ make_seed() {
   condition: true
   timeout: 30"
 
+  umask 077
   cat > "$seed_dir/meta-data" <<EOF
 instance-id: $vm
 local-hostname: $host
@@ -312,7 +330,7 @@ EOF
 hostname: $host
 users:
   - name: $GUEST_USER
-    groups: [wheel, sudo, adm]
+    groups: [$_grp]
     sudo: ALL=(ALL) NOPASSWD:ALL
     lock_passwd: false
     shell: /bin/bash
@@ -337,6 +355,7 @@ $de_runcmd_lines
 $power_state_lines
 # NOTE: no shared-folder / no cross-VM anything provisioned here (isolation).
 EOF
+  umask 022   # restore: the seed ISO must stay readable by the qemu process
   # Build the NoCloud seed ISO. Prefer cloud-localds; else xorriso's mkisofs
   # (installed via virt-install on Alpine); else genisoimage (Debian path).
   # The volume label MUST be "cidata" for cloud-init NoCloud to pick it up.
@@ -355,6 +374,10 @@ EOF
   else
     die "No ISO builder found (cloud-localds/mkisofs/xorriso/genisoimage)."
   fi
+  # Shred the plaintext user-data now that it is baked into the ISO. (The ISO
+  # itself still holds the password; environments/scrub-secrets.sh SCRUB_SEEDS=1
+  # removes it once guests are provisioned.)
+  shred -u "$seed_dir/user-data" 2>/dev/null || rm -f "$seed_dir/user-data"
   echo "$seed_iso"
 }
 

@@ -61,9 +61,20 @@ for_each_enabled_env | while read -r env idx; do
 done
 LIST="$(for_each_enabled_env | awk '{print $1":"$2}')"
 
+# Guard (fail closed): a non-empty EGRESS_ALLOW only has effect in whitelist mode.
+# If an env sets an allow-list but leaves MODE=all, emit_egress ignores it and
+# emits an unconditional WAN accept — egress is wide open while the config looks
+# locked down. Refuse rather than mislead.
+for a in $LIST; do
+  ea="${a%:*}"
+  if [ "$(env_val "$ea" EGRESS_MODE all)" != "whitelist" ] && [ -n "$(env_val "$ea" EGRESS_ALLOW)" ]; then
+    die "$ea: EGRESS_ALLOW is set but EGRESS_MODE is not 'whitelist' — the allow-list would be IGNORED and egress left wide open. Set ${ea}_EGRESS_MODE=whitelist (or clear ${ea}_EGRESS_ALLOW)."
+  fi
+done
+
 # emit_egress <subnet-net> <gw-ip> <mode> <allow-list> -> nft forward lines.
 emit_egress() {
-  net="$1"; gw="$2"; mode="$3"; allow="$4"
+  net="$1"; gw="$2"; mode="$3"; allow="$4"; idx="$5"
   if [ "$mode" = "whitelist" ]; then
     printf '    ip saddr %s ip daddr %s udp dport 53 accept\n' "$net" "$gw"
     printf '    ip saddr %s ip daddr %s tcp dport 53 accept\n' "$net" "$gw"
@@ -71,6 +82,13 @@ emit_egress() {
       set_str="$(echo "$allow" | tr ' ' ',')"
       printf '    ip saddr %s oifname "%s" ip daddr { %s } accept\n' "$net" "$WAN_IFACE" "$set_str"
     fi
+    # If this env is VPN-locked (environments/vpn.sh brings up wg<idx>), let its
+    # tunnel-bound traffic through here too. Base chains on the same hook are ALL
+    # evaluated and an accept in appliance_vpn is not terminal for appliance_isol,
+    # so without this the whitelist drop below would kill packets vpn.sh accepted,
+    # leaving a VPN+whitelist env with zero connectivity. Harmless when no wg<idx>
+    # exists (the oifname simply never matches).
+    printf '    ip saddr %s oifname "wg%s" accept\n' "$net" "$idx"
     printf '    ip saddr %s counter drop\n' "$net"
   else
     printf '    ip saddr %s oifname "%s" accept\n' "$net" "$WAN_IFACE"
@@ -90,7 +108,7 @@ for a in $LIST; do
     iifname \"$ba\" oifname \"$bb\" counter drop"
   done
   EGRESS_RULES="$EGRESS_RULES
-$(emit_egress "$na" "$gwa" "$(env_val "$ea" EGRESS_MODE all)" "$(env_val "$ea" EGRESS_ALLOW)")"
+$(emit_egress "$na" "$gwa" "$(env_val "$ea" EGRESS_MODE all)" "$(env_val "$ea" EGRESS_ALLOW)" "$ia")"
   NAT_RULES="$NAT_RULES
     ip saddr $na oifname \"$WAN_IFACE\" masquerade"
 done
