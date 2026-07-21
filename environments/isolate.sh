@@ -60,6 +60,12 @@ for_each_enabled_env | while read -r env idx; do
   ensure_net "$(env_net "$env")" "$(env_bridge "$env" "$idx")" "$(env_subnet "$env" "$idx")"
 done
 LIST="$(for_each_enabled_env | awk '{print $1":"$2}')"
+# ALL envs by fixed position (enabled or not). Inter-env DROP rules are built over
+# this superset so an env that was created then DISABLED — its libvirt net + VM
+# keep running — stays fenced off instead of silently gaining reachability to the
+# others. Egress/NAT below stay ENABLED-only. DROP rules for a subnet whose bridge
+# doesn't exist are harmless (they simply never match).
+LIST_ALL="$(_i=0; for _e in $ENVS; do _i=$((_i+1)); printf '%s:%s\n' "$_e" "$_i"; done)"
 
 # Guard (fail closed): a non-empty EGRESS_ALLOW only has effect in whitelist mode.
 # If an env sets an allow-list but leaves MODE=all, emit_egress ignores it and
@@ -95,11 +101,12 @@ emit_egress() {
   fi
 }
 
-# Build nftables rule fragments by iterating enabled envs (all-pairs DROP).
+# Build nftables rule fragments.
 DROP_RULES=""; BRIDGE_DROP=""; EGRESS_RULES=""; NAT_RULES=""
-for a in $LIST; do
-  ea="${a%:*}"; ia="${a#*:}"; na="$(env_subnet "$ea" "$ia").0/24"; ba="$(env_bridge "$ea" "$ia")"; gwa="$(env_subnet "$ea" "$ia").1"
-  for b in $LIST; do
+# Inter-env DROP + bridge DROP over ALL defined env positions (every ordered pair).
+for a in $LIST_ALL; do
+  ea="${a%:*}"; ia="${a#*:}"; na="$(env_subnet "$ea" "$ia").0/24"; ba="$(env_bridge "$ea" "$ia")"
+  for b in $LIST_ALL; do
     [ "$a" = "$b" ] && continue
     eb="${b%:*}"; ib="${b#*:}"; nb="$(env_subnet "$eb" "$ib").0/24"; bb="$(env_bridge "$eb" "$ib")"
     DROP_RULES="$DROP_RULES
@@ -107,12 +114,16 @@ for a in $LIST; do
     BRIDGE_DROP="$BRIDGE_DROP
     iifname \"$ba\" oifname \"$bb\" counter drop"
   done
+done
+# Per-env egress policy + NAT for ENABLED envs only (a disabled env gets no internet).
+for a in $LIST; do
+  ea="${a%:*}"; ia="${a#*:}"; na="$(env_subnet "$ea" "$ia").0/24"; gwa="$(env_subnet "$ea" "$ia").1"
   EGRESS_RULES="$EGRESS_RULES
 $(emit_egress "$na" "$gwa" "$(env_val "$ea" EGRESS_MODE all)" "$(env_val "$ea" EGRESS_ALLOW)" "$ia")"
   NAT_RULES="$NAT_RULES
     ip saddr $na oifname \"$WAN_IFACE\" masquerade"
 done
-log "Isolation for envs: $(echo "$LIST" | tr '\n' ' ')"
+log "Isolation for enabled envs: $(echo "$LIST" | tr '\n' ' ')"
 
 # -----------------------------------------------------------------------------
 # 3. nftables: block ALL inter-env traffic; permit each env's outbound per policy.

@@ -57,10 +57,19 @@ mkdir -p "$OUT_DIR"
 echo "[*] Packing appliance tree ..."
 # Tar the whole tree (preserving the lib/host/environments/installer layout) so
 # it extracts to /opt/appliance with the same structure the scripts expect.
-APPLIANCE_TAR_B64="$(tar -czf - \
-  config.env.example README.md setup.sh \
-  lib host environments installer build \
-  | base64 | tr -d '\n')"
+BAKE_FILES="config.env.example README.md setup.sh lib host environments installer build"
+# Optionally bake the LOCAL config.env so the appliance boots with your Wi-Fi /
+# per-env / password settings already in place (no editing on the box). Skip with
+# BAKE_CONFIG=0. WARNING: config.env holds SECRETS (Wi-Fi PSK, passwords) — the
+# resulting image is sensitive, do NOT distribute it. Hardware-detected values in
+# it are re-detected on the real machine at first boot, so a stale local copy is
+# fine.
+if [ -f config.env ] && [ "${BAKE_CONFIG:-1}" != "0" ]; then
+  echo "[!] Baking local config.env into the image — it contains SECRETS. Treat the image as sensitive (BAKE_CONFIG=0 to skip)."
+  BAKE_FILES="config.env $BAKE_FILES"
+fi
+# shellcheck disable=SC2086  # BAKE_FILES is an intentional word list
+APPLIANCE_TAR_B64="$(tar -czf - $BAKE_FILES | base64 | tr -d '\n')"
 
 # -----------------------------------------------------------------------------
 # 2. The in-container build script. Runs INSIDE the privileged Alpine builder.
@@ -152,6 +161,13 @@ fi
 mkdir -p /opt/appliance
 echo "$APPLIANCE_TAR_B64" | base64 -d | tar -xzf - -C /opt/appliance
 chmod +x /opt/appliance/*/*.sh /opt/appliance/setup.sh 2>/dev/null || true
+# If a local config.env was baked in, lock its perms (it holds secrets) and mark
+# it so installer/install-to-disk.sh PRESERVES it instead of wiping it for a
+# fresh detect. Hardware keys still get refreshed by detect-and-install at boot.
+if [ -f /opt/appliance/config.env ]; then
+  chmod 600 /opt/appliance/config.env 2>/dev/null || true
+  touch /opt/appliance/.config-baked
+fi
 
 # 3. Create the UNPRIVILEGED kiosk user (ANSSI: the desktop must not run as root).
 #    'kiosk' can only view/launch the VMs (member of libvirt/kvm) and drive its
@@ -159,8 +175,10 @@ chmod +x /opt/appliance/*/*.sh /opt/appliance/setup.sh 2>/dev/null || true
 adduser -D -s /bin/bash kiosk 2>/dev/null || true
 for g in libvirt libvirtd kvm video input; do addgroup kiosk "$g" 2>/dev/null || true; done
 passwd -u kiosk 2>/dev/null || true       # unlock (no password; console autologin only)
-# Root keeps a password for admin on tty2 (provisioning / recovery). Change it.
-echo 'root:changeme-root' | chpasswd 2>/dev/null || true
+# Root stays LOCKED in the shipped image — never bake a well-known password. The
+# installed system sets a real root password at first boot from HOST_ROOT_PASSWORD
+# (host/configure.sh; default "generate" -> strong random in /root/generated-secrets.txt).
+passwd -l root 2>/dev/null || true
 
 # Autologin the KIOSK user on tty1 (not root).
 [ -f /etc/inittab.orig ] || cp /etc/inittab /etc/inittab.orig
@@ -277,8 +295,8 @@ rc-update add appliance-firstboot default
 # 7. Nested virt drop-ins are written by 01 at first boot (vendor-specific),
 #    so nothing to hardcode here — keeps the image CPU-agnostic.
 
-# 8. Root password: locked (console autologin only). Set one if you need SSH.
-passwd -u root 2>/dev/null || true
+# 8. Root stays LOCKED in the image; first boot sets it from HOST_ROOT_PASSWORD.
+passwd -l root 2>/dev/null || true
 
 # 9. Install a REMOVABLE-PATH UEFI bootloader so real hardware boots.
 #    alpine-make-vm-image's UEFI mode only writes boot/startup.nsh (interpreted

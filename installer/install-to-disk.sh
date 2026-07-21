@@ -175,7 +175,9 @@ G
   chroot /mnt/dst grub-install --target=x86_64-efi --efi-directory=/boot --boot-directory=/boot --removable --no-nvram 2>/dev/null || warn "grub-install warned"
   chroot /mnt/dst grub-mkconfig -o /boot/grub/grub.cfg 2>/dev/null || warn "grub-mkconfig warned"
   touch /mnt/dst/opt/appliance/.installed-system
-  rm -f /mnt/dst/opt/appliance/config.env /mnt/dst/opt/appliance/.firstboot-done
+  # Preserve a baked config.env (.config-baked marker); otherwise wipe for fresh detect.
+  [ -f /mnt/dst/opt/appliance/.config-baked ] || rm -f /mnt/dst/opt/appliance/config.env
+  rm -f /mnt/dst/opt/appliance/.firstboot-done
   for d in dev proc sys; do umount "/mnt/dst/$d"; done
   umount /mnt/dst/boot; umount /mnt/dst
   cryptsetup close cryptroot
@@ -225,7 +227,11 @@ else
   # Mark as INSTALLED so first boot PROVISIONS instead of re-running the installer.
   if mount "$root_part" /mnt 2>/dev/null; then
     mkdir -p /mnt/opt/appliance && touch /mnt/opt/appliance/.installed-system 2>/dev/null || true
-    rm -f /mnt/opt/appliance/config.env /mnt/opt/appliance/.firstboot-done 2>/dev/null || true
+    # Wipe config.env so the installed system re-detects fresh — UNLESS it was
+    # baked from a local config (make-image drops .config-baked), which the
+    # operator wants preserved on the installed appliance.
+    [ -f /mnt/opt/appliance/.config-baked ] || rm -f /mnt/opt/appliance/config.env 2>/dev/null || true
+    rm -f /mnt/opt/appliance/.firstboot-done 2>/dev/null || true
     umount /mnt 2>/dev/null || true
   fi
 fi

@@ -83,6 +83,16 @@ cd multilevel
 
 You get `out/appliance-alpine.qcow2` (~2 GB) after a few minutes.
 
+If a local `config.env` exists, it is **baked into the image** so the appliance
+boots with your Wi-Fi / per-env / password settings already in place — no editing
+on the box, and the installer preserves it (hardware-detected values are still
+re-detected on the real machine at first boot). Because `config.env` holds secrets
+(Wi-Fi PSK, passwords), **the resulting image is sensitive — don't distribute it**.
+Skip baking with `BAKE_CONFIG=0 ./build/make-image.sh` (the appliance then starts
+from `config.env.example` and you edit it on tty2). The shipped image keeps root
+**locked**; the installed system sets root at first boot from `HOST_ROOT_PASSWORD`
+(default `generate` → a strong random one recorded in `/root/generated-secrets.txt`).
+
 ### 2. Flash a USB stick
 
 ```sh
