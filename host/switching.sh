@@ -7,7 +7,8 @@
 #   * workspace 2 = devops VM viewer
 #   * workspace 3 = analysis VM viewer
 #   * Super+1/2/3 switch instantly between them
-#   * every viewer is fullscreen, no borders, no gaps -> you never see the host
+#   * each viewer fills the screen (below the trust bar when TRUST_BAR=1), no
+#     borders, no gaps -> you never see the host
 #
 # Each virt-viewer is launched with --kiosk so the guest owns the whole surface.
 # i3 assigns each viewer window to its workspace by matching window class/title.
@@ -89,9 +90,13 @@ echo "exec --no-startup-id i3-msg workspace number ${first_idx:-1}" >> "$I3_DIR/
 : "${TRUST_BAR:=1}"
 PB_DIR="$KIOSK_HOME/.config/polybar"
 if [ "$TRUST_BAR" = "1" ]; then
-  # Viewers go true --full-screen (no virt-viewer toolbar/menu chrome); the thin
-  # polybar is override-redirect so it stays painted ON TOP of the fullscreen VM.
-  VIEWER_FS="--full-screen"
+  # Viewers are WINDOWED (VIEWER_FS=""), not --full-screen. A true-fullscreen
+  # (EWMH) viewer is raised by i3 ABOVE docks/override-redirect windows, so the
+  # trust bar was always hidden behind the VM. Instead the polybar reserves a top
+  # strut (override-redirect=false) and i3 tiles the borderless viewer BELOW it —
+  # so the bar can NEVER be covered, which is the whole ANSSI point. (Trade-off:
+  # a windowed virt-viewer shows a thin menubar; toggle it off via its View menu.)
+  VIEWER_FS=""
   log "Writing custom polybar trust bar into $PB_DIR ..."
   cat >> "$I3_DIR/config" <<EOF
 
@@ -209,11 +214,11 @@ padding-right = 2
 module-margin = 2
 modules-left  = env
 modules-right = cpu memory net vpn battery date
-; override-redirect = the thin bar stays ON TOP of the fullscreen VM viewers.
-; wm-restack=i3 (NOT generic) is what actually restacks polybar above an
-; i3-fullscreen window — with 'generic' the fullscreen VM viewer covered the bar
-; and it was never visible.
-override-redirect = true
+; NOT override-redirect: this makes polybar a real dock that RESERVES a top strut,
+; so i3 tiles the (windowed, non-fullscreen) VM viewers below it and the bar can
+; never be covered. An override-redirect bar does NOT reserve space and gets
+; painted over by a fullscreen viewer — which is exactly why it was invisible.
+override-redirect = false
 wm-restack = i3
 enable-ipc = true
 
