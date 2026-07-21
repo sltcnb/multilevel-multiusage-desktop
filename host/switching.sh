@@ -94,8 +94,11 @@ if [ "$TRUST_BAR" = "1" ]; then
   # (EWMH) viewer is raised by i3 ABOVE docks/override-redirect windows, so the
   # trust bar was always hidden behind the VM. Instead the polybar reserves a top
   # strut (override-redirect=false) and i3 tiles the borderless viewer BELOW it —
-  # so the bar can NEVER be covered, which is the whole ANSSI point. (Trade-off:
-  # a windowed virt-viewer shows a thin menubar; toggle it off via its View menu.)
+  # so the bar can NEVER be covered, which is the whole ANSSI point. Trade-off: a
+  # windowed virt-viewer shows a ~1-row header that CANNOT be hidden (it's
+  # hardwired to fullscreen-only in virt-viewer's source — no gsettings/flag/
+  # keyfile). We dark-theme it (vm-viewer.sh) so it blends into the bezel; it sits
+  # BELOW the trust bar, so it never occludes the trust indicator.
   VIEWER_FS=""
   log "Writing custom polybar trust bar into $PB_DIR ..."
   cat >> "$I3_DIR/config" <<EOF
@@ -103,6 +106,9 @@ if [ "$TRUST_BAR" = "1" ]; then
 # --- Trust bar: custom polybar (ANSSI always-visible active-env indicator) ---
 # polybar reserves the top strut, so viewers tile below it and can't hide it.
 exec_always --no-startup-id $PB_DIR/launch.sh
+# Guard: never let a viewer go fullscreen — an EWMH-fullscreen window is raised
+# above the strut and would HIDE the trust bar (ANSSI trust-indicator escape).
+for_window [class="(?i)virt-viewer"] fullscreen disable
 EOF
   mkdir -p "$PB_DIR"
 
@@ -298,15 +304,24 @@ cat > "$KIOSK_HOME/vm-viewer.sh" <<'EOF'
 # written by host/switching.sh into ~/.vm-viewer-fs.
 vm="$1"
 FS="$(cat "$HOME/.vm-viewer-fs" 2>/dev/null || echo --full-screen)"
+# Dark GTK theme so the ~1-row virt-viewer header (which CANNOT be hidden in
+# windowed mode — it's hardwired to fullscreen-only in virt-viewer's source, no
+# gsettings/flag/keyfile exists) blends into the dark bezel. It sits BELOW the
+# trust bar, so it never occludes the ANSSI trust indicator.
+export GTK_THEME="Adwaita:dark"
 while true; do
   # NOTE: no --title (this virt-viewer build rejects it). The window title comes
   # from the domain name, which the i3 for_window rules match on.
   # SPICE grabs the keyboard while the guest is focused, so i3's Super hotkeys are
   # eaten. keyd (evdev, below X) handles switching; Ctrl+Alt also releases the grab.
+  # NO toggle-fullscreen hotkey: a fullscreen (EWMH) viewer is raised ABOVE the
+  # polybar strut and would HIDE the trust bar — an ANSSI trust-indicator escape.
+  # --auto-resize always: guest framebuffer tracks the windowed tile below the bar.
   virt-viewer \
     --connect qemu:///system \
     $FS \
-    --hotkeys=release-cursor=ctrl+alt,toggle-fullscreen=shift+f11 \
+    --auto-resize always \
+    --hotkeys=release-cursor=ctrl+alt \
     --wait \
     --reconnect \
     --attach "$vm" \
@@ -316,6 +331,17 @@ while true; do
 done
 EOF
 chmod +x "$KIOSK_HOME/vm-viewer.sh"
+
+# virt-viewer settings (GKeyFile — there is NO gsettings schema). share-clipboard
+# =false keeps clipboard from crossing security domains (multilevel isolation);
+# ask-quit=false suppresses the quit dialog in the kiosk.
+VV_DIR="$KIOSK_HOME/.config/virt-viewer"
+mkdir -p "$VV_DIR"
+cat > "$VV_DIR/settings" <<'EOF'
+[virt-viewer]
+share-clipboard=false
+ask-quit=false
+EOF
 # Own all kiosk desktop config (i3, viewer, fs flag) by the kiosk user.
 chown -R "$KIOSK_USER:$KIOSK_USER" "$KIOSK_HOME/.config" "$KIOSK_HOME/vm-viewer.sh" "$KIOSK_HOME/.vm-viewer-fs" 2>/dev/null || true
 
