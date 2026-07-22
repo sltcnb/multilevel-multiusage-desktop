@@ -44,7 +44,7 @@
       # --- The bootable, self-installing image -------------------------------
       # nix build .#image  ->  a raw EFI disk image you flash to USB.
       # On Apple Silicon this cross-builds x86_64: point Nix at a Linux builder
-      # (nix-darwin's `linux-builder`, or a remote builder) — see README-nixos.md.
+      # (nix-darwin's `linux-builder`, or a remote builder) — see README.md.
       packages = forAllDev (system:
         nixpkgs.lib.optionalAttrs (system == applianceSystem) {
           image = nixos-generators.nixosGenerate {

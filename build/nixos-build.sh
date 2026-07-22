@@ -12,7 +12,7 @@
 # Building the image also realises the guest provisioner, which is a
 # `writeShellApplication` — so ShellCheck runs on it as part of the build.
 # From macOS, don't run this here: build on a Linux box (this script) or set up
-# a remote builder — see README-nixos.md.
+# a remote builder — see README.md ("Building the image").
 # -----------------------------------------------------------------------------
 set -euo pipefail
 
@@ -44,7 +44,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 # --- host sanity -------------------------------------------------------------
-[ "$(uname -s)" = "Linux" ] || die "Run on the x86_64-linux workstation, not $(uname -s). From macOS use a remote/Linux builder (README-nixos.md)."
+[ "$(uname -s)" = "Linux" ] || die "Run on the x86_64-linux workstation, not $(uname -s). From macOS use a remote/Linux builder (see README.md)."
 [ "$(uname -m)" = "x86_64" ] || warn "Arch is $(uname -m); the appliance targets x86_64-linux. The build will need binfmt emulation or a remote x86_64 builder."
 
 # --- ensure nix --------------------------------------------------------------
