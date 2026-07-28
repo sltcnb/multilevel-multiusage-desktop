@@ -62,7 +62,11 @@ name-based rules you'd point the whitelist at a filtering proxy.
 
 `environments/isolate.sh` builds all of this and then **verifies** it: from
 inside each guest it pings every other subnet (must fail) and the internet (must
-succeed), and it checks on the host that every drop rule is actually live.
+succeed), and it checks on the host that every drop rule is actually live. A
+failed check is a failed run — the script exits non-zero, so a breach can't slip
+by as a warning in a boot log. Checks that couldn't run yet (guest still
+booting, agent not up) are reported as skipped and don't fail the run, but the
+script tells you isolation is not fully verified until you re-run it.
 
 ## Getting it onto a machine
 
@@ -372,13 +376,44 @@ encryption).
 
 Every script is `set -euo pipefail` (or `set -eu` for the POSIX `lib/common.sh`),
 checks for root and its dependencies, and is safe to re-run. Continuous
-integration runs [ShellCheck](https://www.shellcheck.net/) on every push and pull
-request; it fails on warnings and above. Run the same check locally before
-opening a PR:
+integration runs [ShellCheck](https://www.shellcheck.net/) and the test suite on
+every push and pull request; ShellCheck fails on warnings and above. Run both
+locally before opening a PR:
 
 ```sh
-shellcheck -x -S warning lib/*.sh host/*.sh environments/*.sh installer/*.sh build/*.sh
+shellcheck -x -S warning lib/*.sh host/*.sh environments/*.sh installer/*.sh build/*.sh tests/*.sh
+./tests/run.sh
 ```
+
+### Tests
+
+`./tests/run.sh` runs the suite inside a privileged Alpine container — the same
+distro the appliance is built on — because the scripts under test really do
+configure a host: they load nftables rules, write to `/etc`, and create users.
+The container makes that safe and disposable, and means the assertions are about
+real behaviour rather than a mock:
+
+- the generated nftables rulesets are **loaded into a real kernel**, so a rule
+  the kernel would reject cannot pass;
+- the generated cloud-init seed is read back out of the ISO and **parsed as
+  YAML**, so a concatenation slip in `create.sh` fails the build;
+- libvirt, the network stack and the display server are replaced by recording
+  stubs in `tests/stubs/`, which also let a test simulate an isolation breach, a
+  guest agent that never answers, or a detach that libvirt refuses.
+
+```sh
+./tests/run.sh              # everything
+./tests/run.sh isolate      # one file (tests/test-isolate.sh)
+IN_CONTAINER=1 ./tests/run.sh    # already on a suitable Linux host, as root
+```
+
+| File | Covers |
+|------|--------|
+| `tests/test-common.sh`  | the environment model, `config.env` handling, secret generation and scrubbing |
+| `tests/test-create.sh`  | VM creation, cloud-init generation, DE/integration wiring, supply-chain guards |
+| `tests/test-isolate.sh` | the isolation ruleset, egress policy, and the verification result |
+| `tests/test-host.sh`    | hardening, the kiosk desktop, switching/trust bar, Wi-Fi, captive portal |
+| `tests/test-ops.sh`     | the setup menu, USB routing, password changes, VPN, secret scrubbing |
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for style and review expectations.
 
@@ -389,12 +424,26 @@ vulnerability privately, see [SECURITY.md](SECURITY.md). Secrets live only in th
 git-ignored `config.env` or on the appliance — never in the repository or a
 shipped image.
 
-Supply-chain integrity is enforced fail-closed: `environments/create.sh` refuses
-to use a base cloud image whose SHA256 isn't pinned in `config.env` and matching,
-and refuses to trust a third-party apt signing key (Microsoft, Wazuh) whose
-fingerprint doesn't match the pinned value after import. `host/harden.sh` always
-sets `PermitEmptyPasswords no` and denies the passwordless kiosk console account
-over SSH, regardless of the `HARDEN_INPUT`/`HOST_SSH` firewall settings.
+Supply-chain integrity:
+
+- **Base cloud images.** Pinning is optional but strict once set. With no
+  `*_IMG_SHA256` the image downloads unverified and prints a warning; with a hash
+  set, every run — fresh download or cache hit — is verified, and a mismatch
+  deletes the file and aborts. `REQUIRE_IMG_SHA256=1` makes a missing pin a hard
+  error.
+- **Third-party apt keys.** `environments/create.sh` refuses to trust a Microsoft
+  or Wazuh signing key whose fingerprint doesn't match the pinned value after
+  import, and refuses to build the seed at all if you blank a fingerprint that
+  the current config needs.
+
+`host/harden.sh` always sets `PermitEmptyPasswords no` and denies the
+passwordless kiosk console account over SSH, regardless of the
+`HARDEN_INPUT`/`HOST_SSH` firewall settings.
+
+`config.env` is kept at mode `0600` — it holds the guest and root passwords, the
+Wi-Fi PSK and the LUKS/WireGuard keys, and the kiosk desktop user must never be
+able to read it. Every write goes back through that mode, and a root-run script
+tightens the file if it finds it loose.
 
 ## License
 

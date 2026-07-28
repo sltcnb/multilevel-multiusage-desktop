@@ -403,7 +403,8 @@ Flash to USB / bare metal:
   qemu-img convert -O raw $OUT_DIR/$OUT_IMG $OUT_DIR/appliance.raw
   sudo dd if=$OUT_DIR/appliance.raw of=/dev/rdiskN bs=4m   # <-- pick the right disk!
 
-First boot auto-runs 01/02/04 (nested virt, autologin, i3 kiosk). Then on the
-appliance run:
-  cd /opt/appliance && sudo ./environments/create.sh && sudo ./environments/isolate.sh
+First boot auto-runs the host base (nested virt, autologin, i3 kiosk). Then on
+the appliance, as ROOT on tty2 (Ctrl+Alt+F2 — there is deliberately no sudo on
+the host):
+  cd /opt/appliance && ./setup.sh        # 3) create VMs   4) isolate + verify
 EOF

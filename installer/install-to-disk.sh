@@ -244,11 +244,13 @@ else
   cat <<EOF
 
 DONE. Now:
-  1. Poweroff:            sudo poweroff
+  1. Poweroff:            poweroff
   2. Remove the USB stick.
   3. Power on — the machine boots the appliance from its internal disk.
-  4. First boot auto-configures (01/02/06/04/07) with the FULL disk available,
-     so the disk auto-split works. Then create the VMs:
-        cd /opt/appliance && sudo ./environments/create.sh && sudo ./environments/isolate.sh
+  4. First boot auto-configures the host base (detect, configure, harden,
+     switching, Wi-Fi, portal) with the FULL disk available, so the per-env
+     resource split is sized to the real machine. Then, as ROOT on tty2
+     (Ctrl+Alt+F2 — the host has no sudo by design), create the VMs:
+        cd /opt/appliance && ./setup.sh     # 3) create   4) isolate + verify
 EOF
 fi
