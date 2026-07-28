@@ -1,0 +1,4 @@
+#!/bin/sh
+: "${STUB_LOG:=/tmp/stub.log}"
+printf '%s %s\n' "$(basename "$0")" "$*" >> "$STUB_LOG"
+exit 0

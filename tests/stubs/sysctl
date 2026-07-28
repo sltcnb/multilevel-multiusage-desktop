@@ -1,0 +1,4 @@
+#!/bin/sh
+: "${STUB_LOG:=/tmp/stub.log}"
+printf 'sysctl %s\n' "$*" >> "$STUB_LOG"
+exit 0

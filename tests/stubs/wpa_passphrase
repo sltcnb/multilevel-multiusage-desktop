@@ -1,0 +1,4 @@
+#!/bin/sh
+# ssid=$1 psk=$2 — mimic the real tool, including the plaintext #psk comment line
+# that host/wifi.sh must strip.
+printf 'network={\n\tssid="%s"\n\t#psk="%s"\n\tpsk=deadbeef0123456789abcdef\n}\n' "$1" "$2"

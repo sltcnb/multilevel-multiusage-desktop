@@ -1,0 +1,68 @@
+#!/bin/sh
+# Test stub for virsh. Records every invocation to $STUB_LOG and answers the
+# subcommands the appliance scripts actually use. State (which nets/domains
+# "exist") lives as marker files under $STUB_STATE so idempotency can be tested.
+: "${STUB_LOG:=/tmp/stub.log}"; : "${STUB_STATE:=/tmp/stub-state}"
+mkdir -p "$STUB_STATE"
+printf 'virsh %s\n' "$*" >> "$STUB_LOG"
+
+# Strip the -q/--quiet flag some callers pass before the subcommand.
+while [ "${1:-}" = "-q" ] || [ "${1:-}" = "--quiet" ]; do shift; done
+cmd="${1:-}"; shift 2>/dev/null || true
+
+case "$cmd" in
+  net-info)   [ -f "$STUB_STATE/net-$1" ] || exit 1 ;;
+  net-define) # arg is an XML file; remember the <name> it defines
+              n="$(sed -n 's:.*<name>\(.*\)</name>.*:\1:p' "$1" | head -1)"
+              cp "$1" "$STUB_STATE/netxml-$n"; touch "$STUB_STATE/net-$n" ;;
+  net-start|net-autostart|net-destroy|net-undefine) : ;;
+  dominfo)    [ -f "$STUB_STATE/dom-$1" ] || exit 1 ;;
+  define)     # reads domain XML on stdin (/dev/stdin)
+              cat > "$STUB_STATE/domxml-defined"
+              n="$(sed -n 's:.*<name>\(.*\)</name>.*:\1:p' "$STUB_STATE/domxml-defined" | head -1)"
+              [ -n "$n" ] && { cp "$STUB_STATE/domxml-defined" "$STUB_STATE/domxml-$n"; touch "$STUB_STATE/dom-$n"; } ;;
+  start|autostart|destroy|undefine|secret-define|secret-set-value) : ;;
+  list)       for f in "$STUB_STATE"/dom-*; do
+                [ -e "$f" ] || continue; basename "$f" | sed 's/^dom-//'
+              done ;;
+  domblklist) d="$1"
+              printf ' Target   Source\n----------------------------\n'
+              [ -f "$STUB_STATE/blk-$d" ] && cat "$STUB_STATE/blk-$d" ;;
+  detach-disk) d="$1"; t="$2"
+              # STUB_DETACH_FAIL=1 simulates libvirt refusing the detach: the
+              # domain keeps referencing the disk.
+              [ "${STUB_DETACH_FAIL:-0}" = "1" ] && exit 1
+              [ -f "$STUB_STATE/blk-$d" ] && { grep -v "^ *$t " "$STUB_STATE/blk-$d" > "$STUB_STATE/blk-$d.new"; mv "$STUB_STATE/blk-$d.new" "$STUB_STATE/blk-$d"; } ;;
+  attach-device|detach-device) cat >/dev/null 2>&1 || true ;;
+  set-user-password) : ;;
+  qemu-agent-command)
+              # $1 = domain, $2 = JSON. Behaviour driven by $STUB_AGENT:
+              #   down  -> agent unreachable
+              #   slow  -> never reports "exited":true (tests the poll timeout)
+              #   up    -> a simulated guest: pings to the internet succeed,
+              #            pings to a peer environment's gateway return
+              #            $STUB_PEER_RC (default 1 = blocked, i.e. isolated).
+              #            Set STUB_PEER_RC=0 to simulate an isolation BREACH.
+              case "${STUB_AGENT:-up}" in
+                down) exit 1 ;;
+                slow) case "$2" in *guest-exec-status*) echo '{"return":{"exited":false}}';;
+                                   *) echo '{"return":{"pid":1234}}';; esac ;;
+                *)    case "$2" in
+                        *guest-exec-status*)
+                          pid="$(printf '%s' "$2" | sed -n 's/.*"pid":\([0-9]*\).*/\1/p')"
+                          tgt="$(cat "$STUB_STATE/pid-$pid" 2>/dev/null || echo '')"
+                          case "$tgt" in
+                            *10.10.*) rc="${STUB_PEER_RC:-1}" ;;   # peer env gateway
+                            *)        rc="${STUB_WAN_RC:-0}"  ;;   # the internet
+                          esac
+                          printf '{"return":{"exitcode":%s,"exited":true}}\n' "$rc" ;;
+                        *)
+                          n="$(cat "$STUB_STATE/pidseq" 2>/dev/null || echo 1000)"
+                          n=$((n+1)); echo "$n" > "$STUB_STATE/pidseq"
+                          printf '%s' "$2" > "$STUB_STATE/pid-$n"
+                          printf '{"return":{"pid":%s}}\n' "$n" ;;
+                      esac ;;
+              esac ;;
+  *) : ;;
+esac
+exit 0

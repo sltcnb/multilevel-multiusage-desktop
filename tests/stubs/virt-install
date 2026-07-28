@@ -1,0 +1,24 @@
+#!/bin/sh
+: "${STUB_LOG:=/tmp/stub.log}"; : "${STUB_STATE:=/tmp/stub-state}"
+mkdir -p "$STUB_STATE"
+printf 'virt-install %s\n' "$*" >> "$STUB_LOG"
+name=""; disk=""; print=0
+prev=""
+for a in "$@"; do
+  case "$prev" in --name) name="$a";; --disk) [ -z "$disk" ] && disk="$a";; esac
+  [ "$a" = "--print-xml" ] && print=1
+  prev="$a"
+done
+src="$(printf '%s' "$disk" | sed -n 's/^path=\([^,]*\).*/\1/p')"
+xml="<domain type='kvm'>
+  <name>$name</name>
+  <devices>
+    <disk type='file' device='disk'>
+      <source file='$src'/>
+      <target dev='vda' bus='virtio'/>
+    </disk>
+  </devices>
+</domain>"
+if [ "$print" = 1 ]; then printf '%s\n' "$xml"; else
+  printf '%s\n' "$xml" > "$STUB_STATE/domxml-$name"; touch "$STUB_STATE/dom-$name"; fi
+exit 0

@@ -1,4 +1,4 @@
-name: shellcheck
+name: ci
 
 on:
   push:
@@ -32,4 +32,18 @@ jobs:
             host/*.sh \
             environments/*.sh \
             installer/*.sh \
-            build/*.sh
+            build/*.sh \
+            tests/*.sh
+
+  tests:
+    name: Test suite
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # The runner is already Linux and the job is root-capable via sudo, but the
+      # suite writes to /etc and loads nftables rules — do that in a throwaway
+      # privileged Alpine container rather than on the runner itself.
+      - name: Run the appliance test suite
+        run: ./tests/run.sh

@@ -1,0 +1,8 @@
+#!/bin/sh
+: "${STUB_LOG:=/tmp/stub.log}"
+printf 'wget %s\n' "$*" >> "$STUB_LOG"
+out=""; prev=""
+for a in "$@"; do [ "$prev" = "-O" ] && out="$a"; prev="$a"; done
+[ -n "$out" ] || exit 1
+qemu-img create -f qcow2 "$out" 64M >/dev/null 2>&1 || printf 'FAKE-IMAGE\n' > "$out"
+exit 0
