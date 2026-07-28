@@ -78,8 +78,13 @@ mkdir -p "$IMAGES_DIR" "$CACHE_DIR"
 # out. Defaults are the vendors' current, well-known, long-lived signing-key
 # fingerprints (verified independently) — override only if a vendor rotates
 # its key, and verify the new one out-of-band first.
-: "${MS_GPG_FPR:=BC528686B50D79E339D3721CEB3E94ADBE1229CF}"
-: "${WAZUH_GPG_FPR:=0DCFCA5547B19D2A6099506096B3EE5F29111145}"
+# `${VAR-default}` and NOT `${VAR:=default}`: the := form also substitutes when
+# the variable is set but EMPTY, so an operator who deliberately blanks a
+# fingerprint in config.env had it silently replaced by the default again and
+# require_pinned_fpr below could never fire — the documented fail-closed guard
+# was unreachable. With `-`, an explicit empty value survives and is refused.
+MS_GPG_FPR="${MS_GPG_FPR-BC528686B50D79E339D3721CEB3E94ADBE1229CF}"
+WAZUH_GPG_FPR="${WAZUH_GPG_FPR-0DCFCA5547B19D2A6099506096B3EE5F29111145}"
 
 # -----------------------------------------------------------------------------
 # Custom APT source (OPTIONAL — applies to apt-family guests: ubuntu/debian).
@@ -184,7 +189,13 @@ make_seed() {
   # group best-effort in runcmd afterwards. Privilege comes from `sudo:` anyway.
   case "$(os_family "$_os")" in
     apt) _grp_csv="sudo,adm" ;;
-    *)   _grp_csv="wheel" ;;
+    *)   _grp_csv="wheel"
+         # The Arch cloud image ships the `wheel` group but NOT the sudo package,
+         # so cloud-init's `sudo: ALL=(ALL) NOPASSWD:ALL` above wrote a sudoers
+         # drop-in for a binary that does not exist — the guest user ended up with
+         # no way to escalate at all. Pull sudo in explicitly.
+         de_pkg_lines="$de_pkg_lines
+  - sudo" ;;
   esac
   de_runcmd_lines="$de_runcmd_lines
   - sh -c 'usermod -aG $_grp_csv $GUEST_USER 2>/dev/null || true'"

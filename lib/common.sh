@@ -41,18 +41,29 @@ CONFIG_EXAMPLE="$APP_ROOT/config.env.example"
 
 load_config() {
   [ -f "$CONFIG_ENV" ] || die "config.env not found. Run host/detect-and-install.sh first."
+  # Self-heal permissions: config.env carries secrets, so it must never be
+  # readable by the kiosk user. An older appliance (or a hand-edited file) can
+  # still be 0644 — tighten it whenever a root-run script reads it.
+  [ "$(id -u)" = "0" ] && chmod 600 "$CONFIG_ENV" 2>/dev/null
   # shellcheck disable=SC1090
   . "$CONFIG_ENV"
 }
 
 # set_kv KEY VALUE — idempotently upsert KEY="VALUE" into config.env.
+# config.env holds SECRETS (guest/root passwords, Wi-Fi PSK, LUKS + VPN keys) and
+# is world-readable-by-default otherwise: the rewrite below creates a fresh temp
+# file, so without an explicit umask the replacement would come back as 0644 and
+# hand every local account — including the unprivileged kiosk desktop user — the
+# whole secret set. Create it 0600 and keep it that way on every write.
 set_kv() {
   key="$1"; val="$2"
-  touch "$CONFIG_ENV"
+  ( umask 077; touch "$CONFIG_ENV" )
   # remove any existing line for this key, then append the new one.
-  grep -v "^${key}=" "$CONFIG_ENV" > "$CONFIG_ENV.tmp" 2>/dev/null || true
-  printf '%s="%s"\n' "$key" "$val" >> "$CONFIG_ENV.tmp"
+  ( umask 077
+    grep -v "^${key}=" "$CONFIG_ENV" > "$CONFIG_ENV.tmp" 2>/dev/null || true
+    printf '%s="%s"\n' "$key" "$val" >> "$CONFIG_ENV.tmp" )
   mv "$CONFIG_ENV.tmp" "$CONFIG_ENV"
+  chmod 600 "$CONFIG_ENV" 2>/dev/null || true
   export "$key=$val"
 }
 

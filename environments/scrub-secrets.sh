@@ -42,9 +42,22 @@ if [ "${SCRUB_SEEDS:-0}" = "1" ]; then
     # 'sda' (q35 -> sata sda, i440fx -> ide hda). Detaching a hardcoded 'sda'
     # silently no-ops on i440fx, then rm leaves the domain XML pointing at a
     # now-missing ISO and `virsh start` fails. Discover the real target first.
-    tgt="$(virsh domblklist "$env" 2>/dev/null | awk -v f="$seed" '$NF==f {print $3; exit}')"
-    [ -n "$tgt" ] && virsh detach-disk "$env" "$tgt" --config 2>/dev/null || true
-    rm -f "$seed" 2>/dev/null || true
+    # `virsh domblklist` prints just two columns (Target, Source), so the target
+    # device is $1 — reading $3 matched nothing, the detach silently no-opped for
+    # EVERY domain, and the rm below then left the domain XML pointing at a
+    # deleted ISO, which makes the next `virsh start` fail outright.
+    tgt="$(virsh domblklist "$env" 2>/dev/null | awk -v f="$seed" '$NF==f {print $1; exit}')"
+    if [ -n "$tgt" ]; then
+      virsh detach-disk "$env" "$tgt" --config 2>/dev/null \
+        || warn "$env: could not detach seed cdrom '$tgt' — leaving $seed in place."
+    fi
+    # Only remove the ISO once the PERSISTENT config no longer references it; a
+    # dangling cdrom source is worse than a leftover seed file. (--inactive: a
+    # running domain keeps the cdrom in its live XML until it is restarted, and
+    # qemu holds the open fd, so unlinking now is safe.)
+    if [ -z "$(virsh domblklist "$env" --inactive 2>/dev/null | awk -v f="$seed" '$NF==f {print $1; exit}')" ]; then
+      rm -f "$seed" 2>/dev/null || true
+    fi
   done
   log "Seed ISOs detached + removed (SCRUB_SEEDS=1)."
 fi

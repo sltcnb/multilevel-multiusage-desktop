@@ -123,6 +123,11 @@ fi
 # -----------------------------------------------------------------------------
 if [ "${HARDEN_INPUT:-0}" = "1" ]; then
   log "Applying default-DROP host INPUT firewall ..."
+  require_cmds nft
+  # environments/isolate.sh creates this directory too, but harden runs FIRST at
+  # first boot — without the mkdir the heredoc below fails and `set -e` aborts
+  # hardening entirely.
+  mkdir -p /etc/nftables.d
   ssh_rule=""
   [ "${HOST_SSH:-0}" = "1" ] && ssh_rule='    tcp dport 22 accept'
   cat > /etc/nftables.d/appliance-host-input.nft <<EOF
@@ -139,8 +144,15 @@ table inet appliance_host_input {
     ip6 nexthdr ipv6-icmp accept
     udp sport 67 udp dport 68 accept    # DHCP client replies
 $ssh_rule
-    # Guests reach the host only as their gateway (DNS/DHCP on the virbr* nets);
-    # those arrive on the bridge ifaces which libvirt already permits.
+    # Guests reach the host ONLY as their gateway, for DHCP + DNS on the isolated
+    # bridges. This must be accepted HERE: nftables evaluates every base chain
+    # registered on the input hook, and a drop in ANY of them is final — libvirt
+    # accepting these in its own chain does not override our policy drop. Without
+    # these three rules a guest never gets a DHCP lease and has no resolver, i.e.
+    # HARDEN_INPUT=1 would silently take every environment offline.
+    iifname "virbr*" udp dport 67 accept    # DHCP requests from guests
+    iifname "virbr*" udp dport 53 accept    # DNS to the per-env gateway
+    iifname "virbr*" tcp dport 53 accept
   }
 }
 EOF

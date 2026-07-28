@@ -141,13 +141,21 @@ delete table inet appliance_isol
 table inet appliance_isol {
   chain forward {
     type filter hook forward priority -1; policy accept;
-    ct state established,related accept
-
     # HARD BLOCK: every enabled-env subnet -> every OTHER env subnet (both dirs).
+    # These come FIRST, ahead of the conntrack fast-path below: a cross-env flow
+    # that was established before these rules existed (or during a window where
+    # they were flushed) still has a live conntrack entry, and an
+    # "established,related accept" placed above the drops would keep waving that
+    # flow through for the lifetime of the entry. Isolation must not depend on
+    # when the rules happened to be loaded.
 $DROP_RULES
 
-    # Belt-and-suspenders: same block by bridge interface name.
+    # Belt-and-suspenders: same block by bridge interface name. Interface-based,
+    # so it is family-agnostic and covers IPv6 between bridges as well.
 $BRIDGE_DROP
+
+    # Everything that survived the cross-env drops: let return traffic through.
+    ct state established,related accept
 
     # Per-env egress policy ("all" = full internet, "whitelist" = DNS + listed).
 $EGRESS_RULES
@@ -176,6 +184,11 @@ ok "nftables isolation applied."
 # 3b. HOST-SIDE assertion (no guest agent needed): every ordered env pair has a
 #     live DROP rule.
 # -----------------------------------------------------------------------------
+# Verification tallies. FAILED is what decides this script's exit status: an
+# isolation breach must be a non-zero exit, not just a yellow line that scrolls
+# past in an unattended first-boot log.
+FAILED=0; SKIPPED=0; PASSED=0
+
 log "Host-side check: verifying inter-env DROP rules are live ..."
 live="$(nft list table inet appliance_isol 2>/dev/null || true)"; miss=0; npair=0
 for a in $LIST; do
@@ -190,7 +203,12 @@ for a in $LIST; do
     fi
   done
 done
-[ "$miss" -eq 0 ] && ok "All $npair inter-env DROP rules present." || warn "$miss/$npair DROP rule(s) missing — isolation NOT complete!"
+if [ "$miss" -eq 0 ]; then
+  ok "All $npair inter-env DROP rules present."
+else
+  warn "$miss/$npair DROP rule(s) missing — isolation NOT complete!"
+  FAILED=$((FAILED+miss))
+fi
 
 # -----------------------------------------------------------------------------
 # 4. Verification test.
@@ -209,10 +227,23 @@ guest_exec() {
     2>/dev/null)" || { echo "AGENT_DOWN"; return; }
   pid="$(echo "$out" | sed -n 's/.*"pid":\([0-9]*\).*/\1/p')"
   [ -n "$pid" ] || { echo "AGENT_DOWN"; return; }
-  sleep 3
-  st="$(virsh -q qemu-agent-command "$dom" \
-    "{\"execute\":\"guest-exec-status\",\"arguments\":{\"pid\":$pid}}" 2>/dev/null)"
-  echo "$st" | sed -n 's/.*"exitcode":\([0-9]*\).*/\1/p'
+  # POLL for completion instead of sleeping a fixed 3s and reading once. A ping
+  # that is dropped (exactly the case these checks care about) waits out its
+  # full timeout, and a loaded guest is slower still — a single early read
+  # returns "exited":false, no exitcode, and the check degrades to SKIPPED,
+  # which reads as "couldn't test" when isolation may in fact be broken.
+  _i=0
+  while [ "$_i" -lt "${GUEST_EXEC_TIMEOUT:-20}" ]; do
+    st="$(virsh -q qemu-agent-command "$dom" \
+      "{\"execute\":\"guest-exec-status\",\"arguments\":{\"pid\":$pid}}" 2>/dev/null)"
+    case "$st" in
+      *'"exited":true'*|*'"exited": true'*)
+        echo "$st" | sed -n 's/.*"exitcode":[[:space:]]*\([0-9]*\).*/\1/p'
+        return ;;
+    esac
+    sleep 1; _i=$((_i+1))
+  done
+  echo "TIMEOUT"
 }
 
 # report expected(0=success,1=fail) actual label
@@ -221,16 +252,21 @@ verify() {
   rc="$(guest_exec "$dom" "$cmd")"
   if [ "$rc" = "AGENT_DOWN" ] || [ -z "$rc" ]; then
     warn "[$dom] $label -> SKIPPED (guest agent not ready)"
-    return
+    SKIPPED=$((SKIPPED+1)); return
+  fi
+  if [ "$rc" = "TIMEOUT" ]; then
+    warn "[$dom] $label -> SKIPPED (in-guest command did not finish in ${GUEST_EXEC_TIMEOUT:-20}s)"
+    SKIPPED=$((SKIPPED+1)); return
   fi
   # normalize: rc 0 = command succeeded (reachable); non-zero = unreachable.
   reached=$([ "$rc" = "0" ] && echo yes || echo no)
   if [ "$expect" = "reach" ] && [ "$reached" = "yes" ]; then
-    ok   "[$dom] $label -> PASS (reachable, expected)"
+    ok   "[$dom] $label -> PASS (reachable, expected)"; PASSED=$((PASSED+1))
   elif [ "$expect" = "block" ] && [ "$reached" = "no" ]; then
-    ok   "[$dom] $label -> PASS (blocked, expected)"
+    ok   "[$dom] $label -> PASS (blocked, expected)"; PASSED=$((PASSED+1))
   else
     warn "[$dom] $label -> FAIL (reached=$reached, expected=$expect)"
+    FAILED=$((FAILED+1))
   fi
 }
 
@@ -253,6 +289,17 @@ done
 
 cat <<EOF
 
-Isolation verification complete. Any FAIL = investigate (see README).
+Isolation verification complete: $PASSED passed, $FAILED failed, $SKIPPED skipped.
 If SKIPPED: wait for guests to finish cloud-init, then re-run:  ./environments/isolate.sh
 EOF
+
+# Exit status reflects the SECURITY result, so a caller (setup.sh, a first-boot
+# service, CI) can tell a verified-isolated appliance from a broken one without
+# scraping the log. Skips are not failures — they mean "not yet testable".
+if [ "$FAILED" -gt 0 ]; then
+  die "$FAILED isolation check(s) FAILED — the environments are NOT properly isolated. Investigate before using this machine (see README)."
+fi
+if [ "$SKIPPED" -gt 0 ]; then
+  warn "$SKIPPED check(s) skipped — isolation is NOT fully verified yet. Re-run once the guests have finished booting."
+fi
+ok "Isolation verified."

@@ -33,6 +33,7 @@ PORTAL_SH="$KIOSK_HOME/portal-login.sh"
 # Dedicated workspaces for overlays so they are NOT hidden behind a fullscreen VM.
 WS_PORTAL=8
 WS_SHELL=9
+WS_USB=7
 
 log "Writing $I3_DIR/config (per enabled environment) ..."
 # Static header (quoted heredoc keeps i3 $vars literal).
@@ -51,13 +52,20 @@ bindsym $mod+Shift+q kill
 # Terminal on a dedicated workspace so it's not hidden behind a fullscreen VM.
 # NOTE: X/i3 run as the unprivileged kiosk user, so this is a KIOSK shell, not
 # root. Root admin lives on tty2 (Ctrl+Alt+F2). Super+Return.
-bindsym $mod+Return workspace number 9; exec xterm
+bindsym $mod+Return workspace number WS_SHELL_N; exec xterm
 for_window [class="(?i)xterm"] floating enable, border normal
 # Super+y = route a plugged YubiKey (or USB) to a chosen VM (manual fallback).
-bindsym $mod+y exec --no-startup-id xterm -T "Route YubiKey" -e HOMEDIR_APP/host/usb-to-vm.sh
+# Like the other hotkeys this ALSO has to switch to an empty workspace first,
+# or the chooser xterm opens behind the focused VM and is never seen. The chord
+# itself is delivered by keyd (below) so it survives the SPICE keyboard grab;
+# this i3 binding only covers the case where no viewer holds the keyboard.
+bindsym $mod+y workspace number WS_USB_N; exec --no-startup-id xterm -T "Route YubiKey" -e HOMEDIR_APP/host/usb-to-vm.sh
 EOF
-# Bake the real appliance path into the Super+y binding (header is a quoted heredoc).
-sed -i "s|HOMEDIR_APP|$APP_ROOT|" "$I3_DIR/config"
+# Bake the real appliance path + overlay workspace numbers into the header
+# (it is a quoted heredoc, so nothing expanded there).
+sed -i -e "s|HOMEDIR_APP|$APP_ROOT|" \
+       -e "s|WS_SHELL_N|$WS_SHELL|" \
+       -e "s|WS_USB_N|$WS_USB|" "$I3_DIR/config"
 
 # Per ENABLED env: title-match the viewer to its numbered workspace, bind
 # Super+<idx>, and launch its viewer. Workspaces are named "<idx>: <ENV>" for the
@@ -132,12 +140,16 @@ $(for_each_enabled_env)
 EOF
 
   # Label the overlay workspaces too (Super+p portal = $WS_PORTAL, Super+Return
-  # shell = $WS_SHELL) so the trust bar shows what you're looking at there.
+  # shell = $WS_SHELL, Super+y USB chooser = $WS_USB) so the trust bar always
+  # names what you are looking at — an unlabelled workspace would show the
+  # generic "ENV" pill, which is exactly the confusion the bar exists to prevent.
   name_cases="${name_cases}    $WS_PORTAL) printf '%s' 'PORTAL' ;;
     $WS_SHELL) printf '%s' 'SHELL' ;;
+    $WS_USB) printf '%s' 'USB' ;;
 "
   color_cases="${color_cases}    $WS_PORTAL) printf '%s' '#f59e0b' ;;
     $WS_SHELL) printf '%s' '#6b6b6b' ;;
+    $WS_USB) printf '%s' '#6b6b6b' ;;
 "
 
   # active-env.sh: the left module. A rounded colored "pill" with the ACTIVE env
@@ -377,6 +389,7 @@ export DISPLAY XAUTHORITY
 case "\$1" in
   term)   i3-msg "workspace number $WS_SHELL; exec xterm" ;;
   portal) i3-msg "workspace number $WS_PORTAL; exec $PORTAL_SH" ;;
+  usb)    i3-msg "workspace number $WS_USB; exec xterm -T 'Route YubiKey' -e $APP_ROOT/host/usb-to-vm.sh" ;;
   *)      i3-msg workspace number "\$1" ;;
 esac
 EOF
@@ -391,10 +404,13 @@ chmod +x /usr/local/bin/vmswitch
     echo "meta+$idx = command(/usr/local/bin/vmswitch $idx)"
   done
   echo "meta+enter = command(/usr/local/bin/vmswitch term)"
-  # Super+p (captive-portal login) must also work UNDER the SPICE grab, so route
-  # it through keyd like the workspace keys — an i3-only bindsym never fires while
-  # a guest holds the keyboard grab.
+  # Super+p (captive-portal login) and Super+y (route a YubiKey to one VM) must
+  # also work UNDER the SPICE grab, so route them through keyd like the workspace
+  # keys — an i3-only bindsym never fires while a guest holds the keyboard grab,
+  # which is the normal state of this kiosk. Super+y was i3-only and therefore
+  # dead in practice.
   echo "meta+p = command(/usr/local/bin/vmswitch portal)"
+  echo "meta+y = command(/usr/local/bin/vmswitch usb)"
 } > /etc/keyd/default.conf
 
 # Enable keyd (idempotent).

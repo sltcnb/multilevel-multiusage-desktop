@@ -21,7 +21,13 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/../lib/common.sh"
 require_root
 load_config
-require_cmds startx i3 || true   # present after 01; warn-only if minimal.
+# Warn-only: these arrive with the package step in host/detect-and-install.sh and
+# are not needed by anything this script writes. NOTE: `require_cmds ... || true`
+# does NOT degrade to a warning — require_cmds calls die(), and an `exit` inside a
+# function ends the whole script regardless of the `|| true`. So check by hand.
+for _c in startx i3; do
+  command -v "$_c" >/dev/null 2>&1 || warn "$_c not installed yet — the desktop will not start until host/detect-and-install.sh has installed it."
+done
 
 # -----------------------------------------------------------------------------
 # 1. Autologin root on tty1.
@@ -216,8 +222,12 @@ setsid xterm -geometry 60x18 -T "Route YubiKey" -e "$APP_DIR/host/usb-to-vm.sh" 
 EOF
   chmod +x /usr/local/bin/yubikey-plugged
   mkdir -p /etc/udev/rules.d
+  # ENV{DEVTYPE}=="usb_device" matters: without it the rule also matches every
+  # USB *interface* the key exposes (a YubiKey presents 3-4), so a single insert
+  # fired the chooser several times and stacked duplicate xterms on top of each
+  # other. One device node, one chooser.
   cat > /etc/udev/rules.d/99-yubikey-router.rules <<'URULE'
-ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="1050", RUN+="/usr/local/bin/yubikey-plugged"
+ACTION=="add", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1050", RUN+="/usr/local/bin/yubikey-plugged"
 URULE
   udevadm control --reload 2>/dev/null || true
   ok "YubiKey router active (auto-chooser on plug; Super+y = manual chooser)."

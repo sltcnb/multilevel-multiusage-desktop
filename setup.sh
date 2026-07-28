@@ -25,7 +25,7 @@ show_menu() {
    2) Captive-portal login ..... press Super+p on the desktop  (Entra/OAuth)
    3) Create the VMs ........... environments/create.sh
    4) Isolate + verify ........ environments/isolate.sh
-   5) Change a VM password .... environments/set-guest-password.sh
+   5) Change a VM password .... environments/set-guest-password.sh [env]
    6) Per-env VPN (optional) .. environments/vpn.sh
    7) Scrub secrets (optional)  environments/scrub-secrets.sh
    8) Secure Boot/TPM (opt) ... host/secure-boot.sh
@@ -36,27 +36,34 @@ show_menu() {
 EOF
 }
 
+# run_step <n> [extra args...] — any extra args are passed straight to the
+# underlying script, so e.g. `./setup.sh 5 office` changes just that env's
+# password instead of prompting for all of them.
 run_step() {
-  case "$1" in
-    1) exec "$HERE/host/wifi.sh" ;;
+  step="$1"; shift
+  case "$step" in
+    1) exec "$HERE/host/wifi.sh" "$@" ;;
     2) echo "Press Super+p on the desktop to open the captive portal (Entra/OAuth)."
        echo "Sign in once; NAT then puts every VM online. Nothing to run here." ;;
-    3) exec "$HERE/environments/create.sh" ;;
-    4) exec "$HERE/environments/isolate.sh" ;;
-    5) exec "$HERE/environments/set-guest-password.sh" ;;
-    6) exec "$HERE/environments/vpn.sh" ;;
-    7) exec "$HERE/environments/scrub-secrets.sh" ;;
-    8) exec "$HERE/host/secure-boot.sh" ;;
+    3) exec "$HERE/environments/create.sh" "$@" ;;
+    4) exec "$HERE/environments/isolate.sh" "$@" ;;
+    5) exec "$HERE/environments/set-guest-password.sh" "$@" ;;
+    6) exec "$HERE/environments/vpn.sh" "$@" ;;
+    7) exec "$HERE/environments/scrub-secrets.sh" "$@" ;;
+    8) exec "$HERE/host/secure-boot.sh" "$@" ;;
     q|Q) exit 0 ;;
-    *) echo "Unknown step: $1" >&2; exit 1 ;;
+    *) echo "Unknown step: $step" >&2; exit 1 ;;
   esac
 }
 
-# Direct mode: ./setup.sh <n>
-[ $# -ge 1 ] && run_step "$1"
+# Direct mode: ./setup.sh <n> [args...]
+[ $# -ge 1 ] && run_step "$@"
 
-# Interactive menu.
+# Interactive menu. The line is word-split on purpose so "5 office" works here
+# exactly like `./setup.sh 5 office` does.
 show_menu
 printf 'Step to run [1-8, q to quit]: '
 read -r choice
-run_step "$choice"
+[ -n "$choice" ] || exit 0
+# shellcheck disable=SC2086  # intentional word split: "<step> [args...]"
+run_step $choice

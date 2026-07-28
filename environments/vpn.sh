@@ -140,10 +140,62 @@ fi
 nft -f "$NFT_VPN"
 ok "Per-env VPN egress-lock applied (ANSSI #8: dedicated, non-bypassable tunnel)."
 
+# -----------------------------------------------------------------------------
+# Persistence. The nft egress-lock persists on its own (it is included from the
+# main nftables config), and that half is fail-closed — but the wg interfaces and
+# the policy-routing rules live only in the running kernel. After a reboot a
+# VPN'd env would come up with the lock still dropping its WAN traffic and no
+# tunnel to use instead: permanently offline, with nothing on screen saying why.
+# Install a boot service that re-establishes the tunnels + rules.
+# -----------------------------------------------------------------------------
+# Both writers below go through a temp file + mv. The boot service re-runs THIS
+# script, so a plain `cat >` would truncate the very file the running shell is
+# still reading; an atomic rename leaves that inode alone.
+install_boot_service() {
+  _tmp="$(mktemp)"
+  mkdir -p /etc/init.d /etc/systemd/system 2>/dev/null || true
+  if command -v rc-update >/dev/null 2>&1; then          # OpenRC (Alpine)
+    cat > "$_tmp" <<EOF
+#!/sbin/openrc-run
+description="Per-env WireGuard tunnels + policy routing (appliance)"
+depend() { need net; after firewall nftables; }
+start() {
+    ebegin "Restoring per-env VPN tunnels"
+    $HERE/vpn.sh >/var/log/appliance-vpn.log 2>&1
+    eend \$?
+}
+EOF
+    chmod +x "$_tmp"; mv "$_tmp" /etc/init.d/appliance-vpn
+    rc-update add appliance-vpn default 2>/dev/null || true
+    ok "Boot service installed (OpenRC: appliance-vpn) — tunnels come back after a reboot."
+  elif command -v systemctl >/dev/null 2>&1; then        # systemd (Debian path)
+    cat > "$_tmp" <<EOF
+[Unit]
+Description=Per-env WireGuard tunnels + policy routing (appliance)
+After=network-online.target nftables.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=$HERE/vpn.sh
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    chmod 644 "$_tmp"; mv "$_tmp" /etc/systemd/system/appliance-vpn.service
+    systemctl daemon-reload 2>/dev/null || true
+    systemctl enable appliance-vpn.service 2>/dev/null || true
+    ok "Boot service installed (systemd: appliance-vpn) — tunnels come back after a reboot."
+  else
+    rm -f "$_tmp"
+    warn "No OpenRC/systemd found — re-run environments/vpn.sh by hand after every reboot, or the VPN'd envs stay offline (the egress lock is fail-closed)."
+  fi
+}
+install_boot_service
+
 cat <<EOF
 
-Persistence: enable the wg interfaces at boot, e.g. for each VPN'd env idx:
-    rc-update add wg-quick default   # or a per-iface init
 Verify from inside a VPN'd VM: its public IP should be the VPN endpoint's, and
 direct WAN must be blocked (only the tunnel works).
 EOF
