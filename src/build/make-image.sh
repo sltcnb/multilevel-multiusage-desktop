@@ -15,8 +15,9 @@
 #   Building an Alpine root filesystem + bootloader needs Linux + loop devices.
 #   macOS has neither, so we run the whole build inside a privileged Alpine
 #   Docker container using the upstream `alpine-make-vm-image` tool. The repo
-#   scripts are shipped into the build as a base64 tar (no fragile bind-mount
-#   into the chroot).
+#   scripts are shipped into the build as a base64 tar EMBEDDED in the chroot
+#   profile script — an environment variable cannot carry them (the kernel
+#   caps a single env string at 128 KiB and the tree outgrew that).
 #
 # REQUIREMENTS: Docker Desktop running. That's it (no root on the mac needed;
 #   Docker provides the privileged Linux VM).
@@ -52,7 +53,9 @@ mkdir -p "$OUT_DIR"
 
 # -----------------------------------------------------------------------------
 # 1. Tar up the repo scripts we want baked in, base64-encode for safe transport
-#    into the container/chroot as an env var (files are small shell scripts).
+#    into the container as a FILE (bind-mounted /work). The in-container script
+#    embeds it into the chroot profile — an env var would blow the kernel's
+#    128 KiB single-string exec limit ("argument list too long").
 # -----------------------------------------------------------------------------
 echo "[*] Packing appliance tree ..."
 # Tar the whole tree (preserving the src/<group>/ layout) so it extracts to
@@ -69,7 +72,7 @@ if [ -f config.env ] && [ "${BAKE_CONFIG:-1}" != "0" ]; then
   BAKE_FILES="config.env $BAKE_FILES"
 fi
 # shellcheck disable=SC2086  # BAKE_FILES is an intentional word list
-APPLIANCE_TAR_B64="$(tar -czf - $BAKE_FILES | base64 | tr -d '\n')"
+tar -czf - $BAKE_FILES | base64 > "$OUT_DIR/appliance-tree.b64"
 
 # -----------------------------------------------------------------------------
 # 2. The in-container build script. Runs INSIDE the privileged Alpine builder.
@@ -102,10 +105,18 @@ if ! command -v alpine-make-vm-image >/dev/null 2>&1; then
 fi
 
 # ---- profile callback: runs in chroot of the target rootfs ------------------
+# The appliance tree is EMBEDDED in profile.sh as a base64 heredoc, written in
+# two parts around the payload file. It cannot travel as an env var: the
+# kernel caps a single env string at 128 KiB (E2BIG), and the tree is bigger.
 cat > /work/profile.sh <<'PROFILE'
 #!/bin/sh
 set -eu
-# $APPLIANCE_TAR_B64 is exported into the chroot environment (see invocation).
+APPLIANCE_TAR_B64="$(cat <<'PAYLOAD'
+PROFILE
+cat /work/appliance-tree.b64 >> /work/profile.sh
+cat >> /work/profile.sh <<'PROFILE'
+PAYLOAD
+)"
 
 # 1. Host packages (same set as src/host/detect-and-install.sh; preinstalled here).
 #    Community repo needed for i3wm/virt-viewer.
@@ -340,8 +351,6 @@ chmod +x /work/profile.sh
 
 # ---- run the image builder --------------------------------------------------
 # --script-chroot: run profile.sh inside the target rootfs.
-# We export APPLIANCE_TAR_B64 so the chroot'd profile can read it.
-export APPLIANCE_TAR_B64
 # INSTALL_HOST_PKGS=no: we already installed every host dep above. The tool's
 # own host-package apk step breaks under cross-arch emulation (fetches an
 # arch-specific apk.static and loses network -> "No such package"), so we skip
@@ -383,12 +392,11 @@ echo "[*] Building image in privileged Alpine container (needs Docker) ..."
 # rootfs as amd64. On Apple Silicon this runs under emulation (slower) — that's
 # expected and correct for producing a bootable x86_64 image.
 docker run --rm --privileged --platform linux/amd64 \
-  -e APPLIANCE_TAR_B64="$APPLIANCE_TAR_B64" \
   -v "$OUT_DIR":/work \
   "alpine:${ALPINE_BRANCH#v}" \
   /work/_build_inside.sh "$ALPINE_BRANCH" "$IMG_SIZE" "$OUT_IMG" "$AMVI_REF"
 
-rm -f "$OUT_DIR/_build_inside.sh" "$OUT_DIR/profile.sh"
+rm -f "$OUT_DIR/_build_inside.sh" "$OUT_DIR/profile.sh" "$OUT_DIR/appliance-tree.b64"
 
 echo "[+] Done: $OUT_DIR/$OUT_IMG"
 cat <<EOF

@@ -2,6 +2,8 @@
 # LUKS passphrase, WireGuard private keys). NEVER commit. Commit only the
 # template config.env.example.
 config.env
+# Backups the wizard makes before rewriting config.env — same secrets.
+config.env.bak-*
 
 # Build outputs / disk images (large, generated)
 out/
