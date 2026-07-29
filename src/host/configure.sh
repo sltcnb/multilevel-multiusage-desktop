@@ -238,7 +238,7 @@ cat <<EOF
 
 (On the prebuilt appliance this ran automatically at first boot; the USB
 installer already committed the system to the internal disk via
-installer/install-to-disk.sh — no manual setup-alpine step is needed.)
+src/installer/install-to-disk.sh — no manual setup-alpine step is needed.)
 
-Next (operator): cd /opt/appliance && ./setup.sh    # Wi-Fi -> create -> isolate
+Next (operator): cd /opt/appliance && ./setup-machine.sh    # Wi-Fi -> create -> isolate
 EOF

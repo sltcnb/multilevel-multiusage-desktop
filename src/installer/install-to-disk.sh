@@ -52,7 +52,7 @@ done <<EOF
 $(lsblk -dno NAME,SIZE,TYPE,RM)
 EOF
 
-# Allow override: TARGET_DISK=nvme0n1 ./installer/install-to-disk.sh
+# Allow override: TARGET_DISK=nvme0n1 ./src/installer/install-to-disk.sh
 target="${TARGET_DISK:-$target}"
 [ -n "$target" ] || die "No internal disk found. Set TARGET_DISK=<name> explicitly."
 tgt_size="$(lsblk -dno SIZE "/dev/$target" | head -1)"
@@ -251,6 +251,6 @@ DONE. Now:
      switching, Wi-Fi, portal) with the FULL disk available, so the per-env
      resource split is sized to the real machine. Then, as ROOT on tty2
      (Ctrl+Alt+F2 — the host has no sudo by design), create the VMs:
-        cd /opt/appliance && ./setup.sh     # 3) create   4) isolate + verify
+        cd /opt/appliance && ./setup-machine.sh     # 3) create   4) isolate + verify
 EOF
 fi

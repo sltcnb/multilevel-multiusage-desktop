@@ -124,4 +124,128 @@ assert_contains "the apt primary mirror is rewritten" "$SANDBOX/int-ud.yaml" 'ur
 extract_userdata "$SANDBOX/images/development-seed.iso" "$SANDBOX/int-dev.yaml"
 assert_not_contains "arch guests ignore the apt settings" "$SANDBOX/int-dev.yaml" 'apt:'
 
+# --- vendor GPG signature verification of base images -------------------------
+# These run REAL gpg (installed in the container) against a local "mirror":
+# gpg_lab() installs a test-local wget (prepended to PATH) that serves files
+# from $MIRROR by URL basename, so the signed-SHA256SUMS flow runs end to end
+# without the network. A checksum/signature basename absent from the mirror
+# fails the "download" (a genuinely missing file); anything else falls back to
+# the fake-image behaviour of the stock stub.
+gpg_lab() {
+  new_sandbox
+  MIRROR="$SANDBOX/mirror"; mkdir -p "$MIRROR"; export MIRROR
+  cat > "$SANDBOX/wget" <<'EOF'
+#!/bin/sh
+: "${STUB_LOG:=/tmp/stub.log}"
+printf 'wget %s\n' "$*" >> "$STUB_LOG"
+out=""; prev=""; url=""
+for a in "$@"; do [ "$prev" = "-O" ] && out="$a"; prev="$a"; url="$a"; done
+[ -n "$out" ] || exit 1
+base="$(basename "$url")"
+if [ -f "$MIRROR/$base" ]; then cp "$MIRROR/$base" "$out"; exit 0; fi
+case "$base" in SHA256SUMS*|sha256sums*) exit 1 ;; esac
+qemu-img create -f qcow2 "$out" 64M >/dev/null 2>&1 || printf 'FAKE-IMAGE\n' > "$out"
+EOF
+  chmod +x "$SANDBOX/wget"
+  PATH="$SANDBOX:$PATH"; export PATH
+  GNUPGHOME="$SANDBOX/gnupg"; export GNUPGHOME
+  mkdir -p "$GNUPGHOME"; chmod 700 "$GNUPGHOME"
+  gpg --batch --pinentry-mode loopback --passphrase '' \
+      --quick-gen-key 'Appliance Test Vendor <vendor@example.test>' ed25519 sign never >/dev/null 2>&1
+  VENDOR_FPR="$(gpg --batch --with-colons -k vendor@example.test | awk -F: '/^fpr:/ {print $10; exit}')"
+  gpg --batch --export vendor@example.test > "$SANDBOX/vendor-keyring.gpg" 2>/dev/null
+}
+
+# Publish a fake Ubuntu base image on the mirror; echo its real sha256. Must be
+# a REAL qcow2: create_vm later uses it as a qemu-img backing file.
+mirror_ubuntu_image() {
+  qemu-img create -f qcow2 "$MIRROR/jammy-server-cloudimg-amd64.img" 64M >/dev/null 2>&1
+  sha256sum "$MIRROR/jammy-server-cloudimg-amd64.img" | awk '{print $1}'
+}
+# Publish SHA256SUMS for that image, detached-signed by the given key uid.
+mirror_ubuntu_sums() {
+  printf '%s *jammy-server-cloudimg-amd64.img\n' \
+    "$(sha256sum "$MIRROR/jammy-server-cloudimg-amd64.img" | awk '{print $1}')" > "$MIRROR/SHA256SUMS"
+  gpg --batch --pinentry-mode loopback --passphrase '' -u "$1" \
+      --detach-sign -o "$MIRROR/SHA256SUMS.gpg" "$MIRROR/SHA256SUMS" 2>/dev/null
+}
+
+# strict success — vendor key supplied out of band via IMG_GPG_KEYRING
+gpg_lab
+mirror_ubuntu_image >/dev/null
+mirror_ubuntu_sums vendor@example.test
+cfg_set UBUNTU_IMG_GPG_FPR "$VENDOR_FPR"
+cfg_set IMG_GPG_KEYRING "$SANDBOX/vendor-keyring.gpg"
+"$SANDBOX/environments/create.sh" > "$SANDBOX/gpg-ok.out" 2>&1
+assert_eq "strict mode: a vendor-signed checksum file verifies" 0 "$?"
+assert_contains "strict mode: the sums file is fetched from the image's own directory" "$STUB_LOG" 'wget .*jammy/current/SHA256SUMS$'
+assert_contains "strict mode: the detached signature is fetched too" "$STUB_LOG" 'wget .*jammy/current/SHA256SUMS\.gpg'
+assert_contains "strict mode: trust is gated on the pinned fingerprint" "$SANDBOX/gpg-ok.out" 'signature verified against pinned key'
+assert_contains "strict mode: the image hash comes from the VERIFIED sums file" "$SANDBOX/gpg-ok.out" 'base-ubuntu.img: SHA256 verified'
+: > "$STUB_LOG"
+"$SANDBOX/environments/create.sh" > "$SANDBOX/gpg-cached.out" 2>&1
+assert_eq "strict mode: a cached image still verifies on re-run" 0 "$?"
+assert_contains "strict mode: the cached image is re-verified against a fresh signature fetch" "$STUB_LOG" 'SHA256SUMS\.gpg'
+
+# a valid signature from the WRONG key must be refused — gpg exit 0 is not enough
+gpg_lab
+gpg --batch --pinentry-mode loopback --passphrase '' \
+    --quick-gen-key 'Mallory <mallory@example.test>' ed25519 sign never >/dev/null 2>&1
+gpg --batch --export mallory@example.test >> "$SANDBOX/vendor-keyring.gpg" 2>/dev/null
+mirror_ubuntu_image >/dev/null
+mirror_ubuntu_sums mallory@example.test
+cfg_set UBUNTU_IMG_GPG_FPR "$VENDOR_FPR"
+cfg_set IMG_GPG_KEYRING "$SANDBOX/vendor-keyring.gpg"
+"$SANDBOX/environments/create.sh" > "$SANDBOX/gpg-wrong.out" 2>&1
+if [ "$?" -ne 0 ]; then _g "a valid signature from the WRONG key is refused"; else _b "a valid signature from the WRONG key is refused"; fi
+assert_contains "wrong key: the refusal names the pinned key" "$SANDBOX/gpg-wrong.out" 'not by the pinned key'
+if [ -f "$SANDBOX/images/base-ubuntu.img" ]; then
+  _b "wrong key: the image is deleted so it cannot be reused"
+else
+  _g "wrong key: the image is deleted so it cannot be reused"
+fi
+
+# a missing detached signature must be refused
+gpg_lab
+mirror_ubuntu_image >/dev/null
+printf '%s *jammy-server-cloudimg-amd64.img\n' \
+  "$(sha256sum "$MIRROR/jammy-server-cloudimg-amd64.img" | awk '{print $1}')" > "$MIRROR/SHA256SUMS"
+cfg_set UBUNTU_IMG_GPG_FPR "$VENDOR_FPR"
+cfg_set IMG_GPG_KEYRING "$SANDBOX/vendor-keyring.gpg"
+"$SANDBOX/environments/create.sh" > "$SANDBOX/gpg-nosig.out" 2>&1
+if [ "$?" -ne 0 ]; then _g "a missing detached signature is refused"; else _b "a missing detached signature is refused"; fi
+assert_contains "missing signature: the refusal says why" "$SANDBOX/gpg-nosig.out" 'SHA256SUMS\.gpg missing'
+
+# empty-but-set <OS>_IMG_GPG_FPR is a refused downgrade, not "feature off"
+new_sandbox
+cfg_set UBUNTU_IMG_GPG_FPR ""
+"$SANDBOX/environments/create.sh" > "$SANDBOX/gpg-empty.out" 2>&1
+if [ "$?" -ne 0 ]; then _g "an empty-but-set <OS>_IMG_GPG_FPR dies"; else _b "an empty-but-set <OS>_IMG_GPG_FPR dies"; fi
+assert_contains "empty fpr: the message calls it a refused downgrade" "$SANDBOX/gpg-empty.out" 'refused downgrade'
+
+# a hand-pinned SHA256 WINS over the signature path
+gpg_lab
+img_sha="$(mirror_ubuntu_image)"
+# deliberately NO checksum/signature published — the signature path must not run
+cfg_set UBUNTU_IMG_GPG_FPR "$VENDOR_FPR"
+cfg_set IMG_GPG_KEYRING "$SANDBOX/vendor-keyring.gpg"
+cfg_set UBUNTU_IMG_SHA256 "$img_sha"
+"$SANDBOX/environments/create.sh" > "$SANDBOX/gpg-pin.out" 2>&1
+assert_eq "a hand-pinned SHA256 wins over the signature path" 0 "$?"
+assert_not_contains "pin precedence: the sums file is never fetched" "$STUB_LOG" 'SHA256SUMS'
+
+# REQUIRE_IMG_SHA256=1 is satisfied by a gpg pin (no sha pin needed)
+gpg_lab
+mirror_ubuntu_image >/dev/null
+mirror_ubuntu_sums vendor@example.test
+# (the arch image must also be a real qcow2 — create_vm uses it as a backing file)
+qemu-img create -f qcow2 "$MIRROR/Arch-Linux-x86_64-cloudimg.qcow2" 64M >/dev/null 2>&1
+arch_sha="$(sha256sum "$MIRROR/Arch-Linux-x86_64-cloudimg.qcow2" | awk '{print $1}')"
+cfg_set REQUIRE_IMG_SHA256 1
+cfg_set UBUNTU_IMG_GPG_FPR "$VENDOR_FPR"   # gpg pin must satisfy REQUIRE_IMG_SHA256
+cfg_set IMG_GPG_KEYRING "$SANDBOX/vendor-keyring.gpg"
+cfg_set ARCH_IMG_SHA256 "$arch_sha"        # the arch envs pin a hash instead
+"$SANDBOX/environments/create.sh" > "$SANDBOX/gpg-req.out" 2>&1
+assert_eq "REQUIRE_IMG_SHA256=1 is satisfied by a gpg pin" 0 "$?"
+
 summary

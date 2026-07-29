@@ -18,6 +18,10 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 # which also works. Either way we only touch libvirt, never usbguard IPC.
 export LIBVIRT_DEFAULT_URI=qemu:///system
 require_cmds virsh
+# When udev triggers this on plug we are root, so provision the audit log and
+# the kiosk-writable spool here: it makes the Super+y path (kiosk user) able to
+# record its routes without anyone ever widening the 0600 log. No-op otherwise.
+audit_init
 
 # config.env is mode 0600 (it holds the guest/root passwords, the Wi-Fi PSK and
 # the LUKS keys), so the kiosk user — who is exactly who presses Super+y —
@@ -62,13 +66,28 @@ target="$(printf '%s\n' "$envs" | sed -n "${c}p")"
 hostdev() { printf "<hostdev mode='subsystem' type='usb'><source><vendor id='0x%s'/><product id='0x%s'/></source></hostdev>" "$vend" "$prod"; }
 
 # --- detach from every other env first, then attach to the chosen one ---------
+# The detach is best-effort (libvirt errors when the device was not attached,
+# which is the normal case), but the outcome is not: after this loop the device
+# is attached to none of these environments, which is exactly what the audit
+# record claims.
+cleared=""
 for e in $envs; do
   [ "$e" = "$target" ] && continue
   hostdev | virsh detach-device "$e" /dev/stdin --live 2>/dev/null || true
+  cleared="${cleared:+$cleared,}$e"
 done
 if hostdev | virsh attach-device "$target" /dev/stdin --live; then
+  # Peripheral compartmentalisation is an ANSSI control; the record of WHICH
+  # environment got the device — and which ones it was taken away from — is the
+  # part you need after an incident, so both go in one event, one line.
+  audit_event usb-route "vendor=$vend" "product=$prod" "env=$target" \
+              "detached=${cleared:--}" result=attached
   echo "YubiKey $vp -> $target"
 else
+  # A refused attach is just as interesting: it says the operator intended to
+  # hand this key to that environment even though it did not happen.
+  audit_event usb-route "vendor=$vend" "product=$prod" "env=$target" \
+              "detached=${cleared:--}" result=attach-failed
   echo "Attach failed (is $target running?)"; sleep 3; exit 1
 fi
 sleep 1

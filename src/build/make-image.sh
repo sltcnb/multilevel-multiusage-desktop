@@ -8,8 +8,8 @@
 #   * nested virt + autologin + auto-startx already wired
 #   * a one-shot first-boot service that runs the host base (detect-and-install,
 #     configure, harden, switching, wifi, captive-portal) idempotently, leaving
-#     VM creation (environments/create.sh) and firewall+verify (isolate.sh) — the
-#     ./setup.sh steps — to you.
+#     VM creation (src/environments/create.sh) and firewall+verify (isolate.sh) — the
+#     ./setup-machine.sh steps — to you.
 #
 # HOW IT WORKS (macOS/darwin host):
 #   Building an Alpine root filesystem + bootloader needs Linux + loop devices.
@@ -27,9 +27,9 @@
 # =============================================================================
 set -euo pipefail
 
-# This script lives in build/; the repo root is its parent.
+# This script lives in src/build/; the repo root is two levels up.
 HERE="$(cd "$(dirname "$0")" && pwd)"
-ROOT="$(cd "$HERE/.." && pwd)"
+ROOT="$(cd "$HERE/../.." && pwd)"
 cd "$ROOT"
 
 # --- tunables (overridable via env) ------------------------------------------
@@ -39,7 +39,7 @@ cd "$ROOT"
                                             # 6.6 (v3.20) is too old for this HW.
 : "${IMG_SIZE:=4G}"                         # SMALL host image (OS uses ~1.7G). Kept
                                             # small so the USB->internal dd clone in
-                                            # installer/ is fast; growpart then expands
+                                            # src/installer/ is fast; growpart then expands
                                             # root to fill the internal disk after.
 : "${OUT_DIR:=$ROOT/out}"
 : "${OUT_IMG:=appliance-alpine.qcow2}"
@@ -55,9 +55,9 @@ mkdir -p "$OUT_DIR"
 #    into the container/chroot as an env var (files are small shell scripts).
 # -----------------------------------------------------------------------------
 echo "[*] Packing appliance tree ..."
-# Tar the whole tree (preserving the lib/host/environments/installer layout) so
-# it extracts to /opt/appliance with the same structure the scripts expect.
-BAKE_FILES="config.env.example README.md setup.sh lib host environments installer build"
+# Tar the whole tree (preserving the src/<group>/ layout) so it extracts to
+# /opt/appliance with the same structure the scripts expect.
+BAKE_FILES="config.env.example README.md setup-machine.sh src"
 # Optionally bake the LOCAL config.env so the appliance boots with your Wi-Fi /
 # per-env / password settings already in place (no editing on the box). Skip with
 # BAKE_CONFIG=0. WARNING: config.env holds SECRETS (Wi-Fi PSK, passwords) — the
@@ -107,7 +107,7 @@ cat > /work/profile.sh <<'PROFILE'
 set -eu
 # $APPLIANCE_TAR_B64 is exported into the chroot environment (see invocation).
 
-# 1. Host packages (same set as host/detect-and-install.sh; preinstalled here).
+# 1. Host packages (same set as src/host/detect-and-install.sh; preinstalled here).
 #    Community repo needed for i3wm/virt-viewer.
 setup-apkrepos -c -1 2>/dev/null || true
 sed -i 's/^#\(.*\/community\)/\1/' /etc/apk/repositories 2>/dev/null || true
@@ -131,6 +131,7 @@ apk add \
   eudev udev-init-scripts keyd keyd-openrc usbguard usbguard-openrc usbutils \
   xinit i3wm xterm ttf-dejavu \
   polybar jq font-jetbrains-mono-nerd \
+  dialog \
   firefox-esr \
   xorriso \
   alpine-conf \
@@ -152,6 +153,7 @@ fi
   # grub-efi/efibootmgr/dosfstools: UEFI boot (most modern machines are UEFI-only;
   # a BIOS/MBR-only image is invisible to UEFI firmware and won't boot).
   # firefox-esr: host browser used ONLY for captive-portal (Entra) login (07).
+  # dialog: curses UI for src/host/tui.sh — the operator console ./setup-machine.sh launches.
   # linux-firmware = all WiFi/GPU blobs (baked so any NIC works out of the box).
   # Narrow to e.g. linux-firmware-iwlwifi to shrink the image if NIC is known.
   # NOT cloud-utils-localds (cdrkit) — conflicts with virt-install's xorriso
@@ -160,9 +162,9 @@ fi
 # 2. Unpack repo scripts into /opt/appliance.
 mkdir -p /opt/appliance
 echo "$APPLIANCE_TAR_B64" | base64 -d | tar -xzf - -C /opt/appliance
-chmod +x /opt/appliance/*/*.sh /opt/appliance/setup.sh 2>/dev/null || true
+chmod +x /opt/appliance/src/*/*.sh /opt/appliance/setup-machine.sh 2>/dev/null || true
 # If a local config.env was baked in, lock its perms (it holds secrets) and mark
-# it so installer/install-to-disk.sh PRESERVES it instead of wiping it for a
+# it so src/installer/install-to-disk.sh PRESERVES it instead of wiping it for a
 # fresh detect. Hardware keys still get refreshed by detect-and-install at boot.
 if [ -f /opt/appliance/config.env ]; then
   chmod 600 /opt/appliance/config.env 2>/dev/null || true
@@ -177,7 +179,7 @@ for g in libvirt libvirtd kvm video input; do addgroup kiosk "$g" 2>/dev/null ||
 passwd -u kiosk 2>/dev/null || true       # unlock (no password; console autologin only)
 # Root stays LOCKED in the shipped image — never bake a well-known password. The
 # installed system sets a real root password at first boot from HOST_ROOT_PASSWORD
-# (host/configure.sh; default "generate" -> strong random in /root/generated-secrets.txt).
+# (src/host/configure.sh; default "generate" -> strong random in /root/generated-secrets.txt).
 passwd -l root 2>/dev/null || true
 
 # Autologin the KIOSK user on tty1 (not root).
@@ -265,7 +267,7 @@ start() {
     if booted_from_usb; then
         # USB installer mode: auto-install to the internal disk, then poweroff.
         ebegin "USB installer — auto-installing to internal disk"
-        AUTO_CONFIRM=1 sh ./installer/install-to-disk.sh
+        AUTO_CONFIRM=1 sh ./src/installer/install-to-disk.sh
         eend $?    # installer powers off on success
         return 0
     fi
@@ -276,12 +278,12 @@ start() {
     # switching), configure writes autologin/.profile/.xinitrc, switching writes
     # the i3 config (needed by captive-portal). detect-and-install is non-fatal.
     ebegin "Appliance first-boot (host provisioning)"
-    sh ./host/detect-and-install.sh   || eerror "host/detect-and-install failed"
-    sh ./host/configure.sh            || eerror "host/configure failed"
-    sh ./host/harden.sh               || eerror "host/harden failed"
-    sh ./host/switching.sh            || eerror "host/switching failed"
-    sh ./host/wifi.sh                 || eerror "host/wifi failed"
-    sh ./host/captive-portal.sh       || eerror "host/captive-portal failed"
+    sh ./src/host/detect-and-install.sh   || eerror "host/detect-and-install failed"
+    sh ./src/host/configure.sh            || eerror "host/configure failed"
+    sh ./src/host/harden.sh               || eerror "host/harden failed"
+    sh ./src/host/switching.sh            || eerror "host/switching failed"
+    sh ./src/host/wifi.sh                 || eerror "host/wifi failed"
+    sh ./src/host/captive-portal.sh       || eerror "host/captive-portal failed"
     # Mark done regardless — do not re-wedge on every boot. Re-run scripts by
     # hand from a terminal (Super+Enter) if a step needs fixing.
     rc-update del appliance-firstboot default || true
@@ -406,5 +408,5 @@ Flash to USB / bare metal:
 First boot auto-runs the host base (nested virt, autologin, i3 kiosk). Then on
 the appliance, as ROOT on tty2 (Ctrl+Alt+F2 — there is deliberately no sudo on
 the host):
-  cd /opt/appliance && ./setup.sh        # 3) create VMs   4) isolate + verify
+  cd /opt/appliance && ./setup-machine.sh        # 3) create VMs   4) isolate + verify
 EOF

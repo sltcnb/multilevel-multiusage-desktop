@@ -22,18 +22,31 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/../lib/common.sh"
 require_root
 load_config
-require_cmds virt-install virsh qemu-img wget openssl sha256sum gpg
+require_cmds virt-install virsh qemu-img wget openssl sha256sum sha512sum gpg
 
 mkdir -p "$IMAGES_DIR" "$CACHE_DIR"
 
 # -----------------------------------------------------------------------------
 # Tunable image sources (OVERRIDABLE).
+#   <OS>_IMG_DATE pins the DATED directory each vendor publishes next to its
+#   rolling one. The rolling paths ("current"/"latest") re-point at a new build
+#   every few weeks, which is exactly why hand-pinned hashes went stale and
+#   operators stopped pinning at all. A dated directory is immutable, so a hash
+#   (or a vendor signature) pinned against it keeps verifying until YOU move it.
+#   Empty (default) = today's rolling behaviour. Use the vendor's own directory
+#   name, verbatim — they don't agree on a format:
+#     UBUNTU_IMG_DATE="20260701"          -> .../jammy/20260701/
+#     DEBIAN_IMG_DATE="20260722-2547"     -> .../bookworm/20260722-2547/
+#     ARCH_IMG_DATE="v20260715.556894"    -> .../images/v20260715.556894/
 # -----------------------------------------------------------------------------
-: "${UBUNTU_IMG_URL:=https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img}"
+: "${UBUNTU_IMG_DATE:=}"
+: "${ARCH_IMG_DATE:=}"
+: "${DEBIAN_IMG_DATE:=}"
+: "${UBUNTU_IMG_URL:=https://cloud-images.ubuntu.com/jammy/${UBUNTU_IMG_DATE:-current}/jammy-server-cloudimg-amd64.img}"
 # Arch publishes an official cloud image (qcow2) that ships cloud-init.
-: "${ARCH_IMG_URL:=https://geo.mirror.pkgbuild.com/images/latest/Arch-Linux-x86_64-cloudimg.qcow2}"
+: "${ARCH_IMG_URL:=https://geo.mirror.pkgbuild.com/images/${ARCH_IMG_DATE:-latest}/Arch-Linux-x86_64-cloudimg.qcow2}"
 # Debian official genericcloud qcow2 (bookworm) — ships cloud-init.
-: "${DEBIAN_IMG_URL:=https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.qcow2}"
+: "${DEBIAN_IMG_URL:=https://cloud.debian.org/images/cloud/bookworm/${DEBIAN_IMG_DATE:-latest}/debian-12-genericcloud-amd64.qcow2}"
 
 # -----------------------------------------------------------------------------
 # Base image integrity pinning (OPTIONAL but recommended — supply-chain).
@@ -41,29 +54,52 @@ mkdir -p "$IMAGES_DIR" "$CACHE_DIR"
 #   signature check of their own; a compromised mirror, a MITM, or a stale/
 #   poisoned local cache would otherwise be trusted blindly. fetch() below
 #   FAILS CLOSED: it refuses to use ANY image (fresh download OR already
-#   cached) whose SHA256 doesn't match exactly what is pinned here.
-#   These URLs serve "latest"/"current" ROLLING images, so there is no single
-#   stable "well-known" hash to bake in as a default (unlike the GPG signing
-#   keys below, which rotate far less often) — you must supply it yourself:
-#     1. Fetch the vendor's own published checksums (ideally over a path/
-#        network independent from this host) and verify THEIR signature
-#        before trusting them:
-#          Ubuntu:  https://cloud-images.ubuntu.com/jammy/current/SHA256SUMS
-#                   (+ SHA256SUMS.gpg, signed by Canonical's image key)
-#          Arch:    https://geo.mirror.pkgbuild.com/images/latest/sha256sums.txt
-#                   (+ .sig, signed by the Arch Linux release key)
-#          Debian:  https://cloud.debian.org/images/cloud/bookworm/latest/SHA256SUMS
-#                   (+ SHA256SUMS.sign, signed by the Debian cloud image key)
-#     2. Set the matching 64-hex-char digest in config.env, e.g.:
-#          UBUNTU_IMG_SHA256="...64 hex chars..."
-# OPTIONAL. Leave empty (default) to download without an integrity check (a
-# warning is printed). Set one to turn ON strict verification for that image;
-# a mismatch then deletes the file and aborts. REQUIRE_IMG_SHA256=1 makes a
-# missing pin a hard error for those who want to mandate it. When a vendor
-# publishes a new build a pinned hash goes stale — re-verify + update it then.
+#   cached) that does not verify.
+#   There are two ways to make it verify, and they compose:
+#     1. <OS>_IMG_GPG_FPR  — the vendor's OWN signature, checked automatically
+#        (see below). Survives a vendor rebuild, so it does not go stale.
+#     2. <OS>_IMG_SHA256   — a specific 64-hex-char digest you pin by hand. This
+#        is the STRONGER statement (it pins WHICH build, not just "signed by the
+#        vendor"), so it WINS: when set, the signature path is skipped entirely.
+#        Pair it with <OS>_IMG_DATE above or it goes stale on the next rebuild.
+# Both empty/unset -> the image downloads with no integrity check at all (a
+# warning is printed). REQUIRE_IMG_SHA256=1 makes that a hard error.
 : "${UBUNTU_IMG_SHA256:=}"
 : "${ARCH_IMG_SHA256:=}"
 : "${DEBIAN_IMG_SHA256:=}"
+
+# -----------------------------------------------------------------------------
+# Vendor signature pinning for the base images (same trust model as the apt-key
+# fingerprints below): fetch what the vendor signed, and refuse it unless the
+# signature was made by EXACTLY the pinned key. That closes the hole a bare
+# `gpg --verify` leaves open — gpg exits 0 for a good signature from ANY key it
+# happens to have, so the fingerprint comparison is what actually gates trust.
+#
+# TRI-STATE, on purpose:
+#   * variable NOT SET   -> feature off; today's behaviour (unverified download
+#                           + the warning). This is the default.
+#   * set to a fpr       -> STRICT. A missing//bad/foreign signature deletes the
+#                           image and aborts.
+#   * set to EMPTY ("")  -> REFUSED. Blanking a pin is never a quiet downgrade
+#                           path (same rule as MS_GPG_FPR/WAZUH_GPG_FPR). Note
+#                           this needs `${VAR+set}`, not `${VAR:-}`: the latter
+#                           cannot tell "unset" from "deliberately blanked".
+#   Consequence: to keep the feature off, leave the key OUT of config.env or
+#   comment it out — do NOT write <OS>_IMG_GPG_FPR="".
+#
+# NO DEFAULTS ARE SHIPPED. A fingerprint baked in by this repo would just move
+# the trust problem into git; obtain each vendor's key fingerprint out of band
+# (vendor documentation over an independent path, a distro keyring package,
+# your own escrow) and paste it into config.env yourself:
+#   Ubuntu: Canonical cloud-image signing key  (cloud-images.ubuntu.com docs)
+#   Debian: Debian cloud-images signing key    (wiki.debian.org/Cloud/)
+#   Arch:   the Arch developer key that signed the image (see the .sig)
+: "${IMG_GPG_KEYRING:=}"            # exported key(s) placed here out of band —
+                                    # preferred: no network trust at all.
+: "${IMG_GPG_KEYSERVER:=hkps://keyserver.ubuntu.com}"   # fallback: --recv-keys
+                                    # BY FINGERPRINT. Safe only because the
+                                    # fingerprint is the pin; a hostile
+                                    # keyserver cannot answer with another key.
 
 # -----------------------------------------------------------------------------
 # Pinned GPG fingerprints for third-party apt repos installed INSIDE guests
@@ -109,6 +145,35 @@ WAZUH_GPG_FPR="${WAZUH_GPG_FPR-0DCFCA5547B19D2A6099506096B3EE5F29111145}"
 # current config actually needs was blanked out.
 require_pinned_fpr() {
   eval "[ -n \"\${${1}:-}\" ]" || die "$1 is empty — refusing to install $2 without a pinned GPG fingerprint (see config.env.example)."
+}
+
+# --- vendor-key helpers (same VALIDSIG technique as host/update.sh) -----------
+norm_fpr() { printf '%s' "${1:-}" | tr -d ' :' | tr '[:lower:]' '[:upper:]'; }
+
+# The pinned fingerprint may be the primary key while the signature came from a
+# signing subkey (or the reverse), so match it against every field of VALIDSIG —
+# gpg prints both the signing key and the primary key on that line. This gate is
+# what actually carries the trust: `gpg --verify` exits 0 for a good signature
+# from ANY key it happens to have, so exit status alone proves nothing.
+validsig_has_fpr() {
+  grep '^\[GNUPG:\] VALIDSIG ' "$1" 2>/dev/null | tr ' ' '\n' | grep -qx "$2"
+}
+
+# img_gpg_fpr OSKEY — print the normalized <OSKEY>_IMG_GPG_FPR pin, or nothing
+# when vendor-signature checking is OFF for that OS. TRI-STATE (see the config
+# block above): unset -> off; set-but-EMPTY -> die (blanking a pin is a refused
+# downgrade, same rule as MS_GPG_FPR); set -> normalized fingerprint. Needs
+# ${VAR+set} and NOT ${VAR:-}: the latter cannot tell "unset" from "deliberately
+# blanked". Note there are deliberately NO `: "${<OS>_IMG_GPG_FPR:=}"` defaults
+# at the top of this script — := would turn "unset" into "set-but-empty" and
+# make this guard fire on every default install.
+img_gpg_fpr() {
+  _igf_var="${1}_IMG_GPG_FPR"
+  eval "_igf_isset=\${${_igf_var}+yes}"
+  [ -n "${_igf_isset:-}" ] || return 0
+  eval "_igf_fpr=\${${_igf_var}:-}"
+  [ -n "$_igf_fpr" ] || die "$_igf_var is set but EMPTY — blanking a GPG pin is a refused downgrade. To turn vendor-signature checking OFF, remove or comment out $_igf_var in config.env instead (see the header comment in environments/create.sh)."
+  norm_fpr "$_igf_fpr"
 }
 
 # -----------------------------------------------------------------------------
@@ -428,7 +493,7 @@ verify_image_sha256() {
     # matching *_IMG_SHA256 in config.env to turn on integrity checking for that
     # image, or REQUIRE_IMG_SHA256=1 to make a missing pin a hard error.
     if [ "${REQUIRE_IMG_SHA256:-0}" = "1" ]; then
-      die "No SHA256 pinned for $(basename "$file") and REQUIRE_IMG_SHA256=1 — set its *_IMG_SHA256 in config.env (see config.env.example)."
+      die "No SHA256 pinned for $(basename "$file") and REQUIRE_IMG_SHA256=1 — set its *_IMG_SHA256 or pin the vendor signing key via *_IMG_GPG_FPR in config.env (see config.env.example)."
     fi
     warn "$(basename "$file"): no SHA256 pinned — skipping integrity check (set *_IMG_SHA256 to enable)."
     return 0
@@ -442,11 +507,104 @@ verify_image_sha256() {
 }
 
 # -----------------------------------------------------------------------------
-# fetch  URL DEST SHA256 — download once (idempotent cache), then verify
+# verify_image_vendor_sig  URL DEST OSKEY FPR — STRICT vendor-signature path.
+#   Each vendor publishes a checksum file AND a detached signature for it in the
+#   SAME directory as the image. That directory is derived from the URL, so the
+#   dated directories from <OS>_IMG_DATE are respected automatically (the date
+#   is part of the URL):
+#     UBUNTU <dir>/SHA256SUMS      + SHA256SUMS.gpg
+#     ARCH   <dir>/sha256sums.txt  + sha256sums.txt.sig
+#     DEBIAN <dir>/SHA256SUMS      + SHA256SUMS.sign
+#   The checksum file is what carries the trust: its signature is verified
+#   against EXACTLY the pinned key FPR (via the VALIDSIG technique above — a
+#   bare `gpg --verify` would accept a good signature from any known key), then
+#   the image's sha256 is read out of the VERIFIED file and DEST is checked
+#   against it. FAIL CLOSED at every step: a missing/unreadable/foreign
+#   signature or a missing sums entry deletes DEST (fresh download OR cached
+#   copy alike) and aborts.
+#   The vendor key comes from IMG_GPG_KEYRING (an exported key file placed out
+#   of band — preferred, no network trust at all) or, as a fallback, is fetched
+#   BY FINGERPRINT with --recv-keys from IMG_GPG_KEYSERVER (safe only because
+#   the fingerprint is the pin: a hostile keyserver cannot answer with a
+#   different key).
+# -----------------------------------------------------------------------------
+verify_image_vendor_sig() {
+  url="$1"; dest="$2"; oskey="$3"; fpr="$4"
+  case "$oskey" in
+    UBUNTU) sums_name="SHA256SUMS";     sig_name="SHA256SUMS.gpg" ;;
+    ARCH)   sums_name="sha256sums.txt"; sig_name="sha256sums.txt.sig" ;;
+    DEBIAN) sums_name="SHA256SUMS";     sig_name="SHA256SUMS.sign" ;;
+    *)      die "verify_image_vendor_sig: unknown OS key '$oskey'." ;;
+  esac
+  dir="${url%/*}/"   # the image's own directory (dated dir when <OS>_IMG_DATE set)
+  td="$(mktemp -d)"
+  sums="$td/$sums_name"; sig="$td/$sig_name"; st="$td/gpg-status.txt"
+
+  if ! wget -O "$sums" "${dir}${sums_name}" 2>/dev/null; then
+    rm -rf "$td"; rm -f "$dest"
+    die "$oskey: checksum file $sums_name missing next to the image (${dir}) — STRICT ${oskey}_IMG_GPG_FPR is pinned, so the image cannot be trusted. Deleted $(basename "$dest")."
+  fi
+  if ! wget -O "$sig" "${dir}${sig_name}" 2>/dev/null; then
+    rm -rf "$td"; rm -f "$dest"
+    die "$oskey: detached signature $sig_name missing next to the image (${dir}) — refusing to use an unsigned checksum file (STRICT ${oskey}_IMG_GPG_FPR). Deleted $(basename "$dest")."
+  fi
+
+  if [ -n "$IMG_GPG_KEYRING" ]; then
+    rc=0
+    gpg --batch --no-default-keyring --keyring "$IMG_GPG_KEYRING" \
+        --status-fd 3 --verify "$sig" "$sums" 3>"$st" >/dev/null 2>>"$st" || rc=$?
+  else
+    if ! gpg --batch --keyserver "$IMG_GPG_KEYSERVER" --recv-keys "$fpr" >/dev/null 2>&1; then
+      rm -rf "$td"; rm -f "$dest"
+      die "$oskey: could not fetch vendor key $fpr from $IMG_GPG_KEYSERVER — set IMG_GPG_KEYRING to an exported key file instead (preferred: no network trust). Deleted $(basename "$dest")."
+    fi
+    rc=0
+    gpg --batch --status-fd 3 --verify "$sig" "$sums" 3>"$st" >/dev/null 2>>"$st" || rc=$?
+  fi
+  if [ "$rc" -ne 0 ]; then
+    sed 's/^/    /' "$st" >&2 || true
+    rm -rf "$td"; rm -f "$dest"
+    die "$oskey: vendor signature verification FAILED for $sums_name — refusing $(basename "$dest"). Deleted the image."
+  fi
+  if ! validsig_has_fpr "$st" "$fpr"; then
+    sed 's/^/    /' "$st" >&2 || true
+    rm -rf "$td"; rm -f "$dest"
+    die "$oskey: $sums_name is signed, but not by the pinned key $fpr — refusing $(basename "$dest"). Deleted the image."
+  fi
+  ok "$oskey: $sums_name signature verified against pinned key $fpr."
+
+  # The checksum file is now trustworthy: read the IMAGE's sha256 out of it —
+  # never a hash that travelled outside the signature. sha256sum format is
+  # "<hash>[ *]<filename>"; Ubuntu uses the '*' (binary) marker, Arch/Debian
+  # plain names.
+  want="$(basename "$url")"
+  sha="$(awk -v f="$want" '{n=$2; sub(/^\*/,"",n); if (n==f) {print $1; exit}}' "$sums")"
+  if [ -z "$sha" ]; then
+    rm -rf "$td"; rm -f "$dest"
+    die "$oskey: the VERIFIED $sums_name has no entry for $want — refusing $(basename "$dest") (fail closed). Deleted the image."
+  fi
+  rm -rf "$td"
+  verify_image_sha256 "$dest" "$sha"
+}
+
+# -----------------------------------------------------------------------------
+# fetch  URL DEST SHA256 OSKEY — download once (idempotent cache), then verify
 #   integrity EVERY time — fresh download or cache hit alike (fail closed).
+#   Verification precedence (see the config block at the top):
+#     1. a non-empty SHA256 pin WINS — the signature path is skipped entirely
+#        (it pins WHICH build, the stronger statement);
+#     2. else a pinned <OSKEY>_IMG_GPG_FPR selects the STRICT vendor-signature
+#        path (verify_image_vendor_sig);
+#     3. else unverified (warning; hard error under REQUIRE_IMG_SHA256=1, which
+#        a gpg pin therefore satisfies).
+#   The fpr tri-state is resolved BEFORE the precedence decision so an
+#   empty-but-set pin dies even when a SHA256 pin is present — blanking a pin
+#   must never be a quiet downgrade.
 # -----------------------------------------------------------------------------
 fetch() {
-  url="$1"; dest="$2"; expected_sha256="$3"
+  url="$1"; dest="$2"; expected_sha256="$3"; oskey="${4:-}"
+  fpr=""
+  [ -z "$oskey" ] || fpr="$(img_gpg_fpr "$oskey")"
   if [ -f "$dest" ]; then
     log "Cached: $(basename "$dest") — re-verifying integrity ..."
   else
@@ -454,7 +612,14 @@ fetch() {
     wget -O "$dest.part" "$url"
     mv "$dest.part" "$dest"
   fi
-  verify_image_sha256 "$dest" "$expected_sha256"
+  if [ -n "$expected_sha256" ]; then
+    [ -z "$fpr" ] || log "$(basename "$dest"): SHA256 pin set — it WINS; skipping the vendor-signature path."
+    verify_image_sha256 "$dest" "$expected_sha256"
+  elif [ -n "$fpr" ]; then
+    verify_image_vendor_sig "$url" "$dest" "$oskey" "$fpr"
+  else
+    verify_image_sha256 "$dest" ""
+  fi
 }
 
 # -----------------------------------------------------------------------------
@@ -593,9 +758,9 @@ need_ubuntu=0; need_arch=0; need_debian=0
 for pair in $(for_each_enabled_env | awk '{print $1}'); do
   case "$(env_val "$pair" OS arch)" in ubuntu) need_ubuntu=1;; arch) need_arch=1;; debian) need_debian=1;; esac
 done
-[ "$need_ubuntu" = 1 ] && fetch "$UBUNTU_IMG_URL" "$IMAGES_DIR/base-ubuntu.img"   "$UBUNTU_IMG_SHA256"
-[ "$need_arch"   = 1 ] && fetch "$ARCH_IMG_URL"   "$IMAGES_DIR/base-arch.qcow2"   "$ARCH_IMG_SHA256"
-[ "$need_debian" = 1 ] && fetch "$DEBIAN_IMG_URL" "$IMAGES_DIR/base-debian.qcow2" "$DEBIAN_IMG_SHA256"
+[ "$need_ubuntu" = 1 ] && fetch "$UBUNTU_IMG_URL" "$IMAGES_DIR/base-ubuntu.img"   "$UBUNTU_IMG_SHA256" UBUNTU
+[ "$need_arch"   = 1 ] && fetch "$ARCH_IMG_URL"   "$IMAGES_DIR/base-arch.qcow2"   "$ARCH_IMG_SHA256" ARCH
+[ "$need_debian" = 1 ] && fetch "$DEBIAN_IMG_URL" "$IMAGES_DIR/base-debian.qcow2" "$DEBIAN_IMG_SHA256" DEBIAN
 
 # ENTRA/INTUNE constraint: any env with INTUNE=1 MUST be Ubuntu (Intune Linux
 # enrollment is Ubuntu-only). Enforce so the office/desktop stays Ubuntu.
@@ -627,5 +792,5 @@ first boot, then one automatic reboot into the DE). It's slow the first time by
 design; watch progress with:
     virsh console <name>     (Ctrl+] to exit)
     # in-guest: tail -f /var/log/de-install.log   (DE package install log)
-Next: ./environments/isolate.sh   (or ./setup.sh 4)
+Next: ./src/environments/isolate.sh   (or ./setup-machine.sh 4)
 EOF

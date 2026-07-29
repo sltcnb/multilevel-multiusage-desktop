@@ -5,12 +5,14 @@ set -u
 . "$(dirname "$0")/lib.sh"
 . "$(dirname "$0")/harness.sh"
 
-echo "== setup.sh =="
+echo "== setup-machine.sh =="
 new_sandbox
-"$SANDBOX/setup.sh" </dev/null > "$SANDBOX/menu.out" 2>&1
+# With no arguments setup-machine.sh now execs host/tui.sh (covered in test-tui.sh);
+# the classic numbered menu these assertions exercise lives behind --menu.
+"$SANDBOX/setup-machine.sh" --menu </dev/null > "$SANDBOX/menu.out" 2>&1
 assert_contains "the menu lists the operator steps in order" "$SANDBOX/menu.out" '3\) Create the VMs'
 assert_contains "the menu states the ordering rule that matters" "$SANDBOX/menu.out" 'First run order'
-assert_fails "an unknown step is rejected" "$SANDBOX/setup.sh" 99
+assert_fails "an unknown step is rejected" "$SANDBOX/setup-machine.sh" 99
 # Extra words on the line are forwarded, so "5 office" targets one env.
 cat > "$SANDBOX/environments/set-guest-password.sh" <<'EOF'
 #!/bin/sh
@@ -18,9 +20,9 @@ echo "ARGS:$*"
 EOF
 chmod +x "$SANDBOX/environments/set-guest-password.sh"
 assert_eq "arguments are forwarded to the step (direct mode)" \
-  "ARGS:office" "$("$SANDBOX/setup.sh" 5 office 2>&1)"
+  "ARGS:office" "$("$SANDBOX/setup-machine.sh" 5 office 2>&1)"
 assert_eq "arguments are forwarded to the step (menu mode)" \
-  "ARGS:office" "$(printf '5 office\n' | "$SANDBOX/setup.sh" 2>&1 | tail -1 | sed 's/.*q to quit\]: //')"
+  "ARGS:office" "$(printf '5 office\n' | "$SANDBOX/setup-machine.sh" --menu 2>&1 | tail -1 | sed 's/.*q to quit\]: //')"
 
 echo
 echo "== host/usb-to-vm.sh =="

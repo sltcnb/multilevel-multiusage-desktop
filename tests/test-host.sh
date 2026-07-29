@@ -120,6 +120,57 @@ assert_not_contains "no unexpanded placeholder is left in the i3 config" "$I3" '
 assert_contains "the trust bar names the overlay workspaces too" "$KH/.config/polybar/active-env.sh" "7) printf '%s' 'USB'"
 assert_contains "vmswitch reads the real X cookie from the running i3" /usr/local/bin/vmswitch 'XAUTHORITY='
 
+# The pill also carries each env's security posture: the egress/VPN lookups are
+# baked case statements (render re-runs on every workspace event, so it must
+# never re-read config.env), plus the CONTRACT A isolation module on the right.
+assert_contains "active-env.sh bakes the egress lookup" "$KH/.config/polybar/active-env.sh" 'egress_of\(\)'
+assert_contains "active-env.sh bakes the VPN-intent lookup" "$KH/.config/polybar/active-env.sh" 'vpn_wanted\(\)'
+assert_contains "the pill flags whitelist egress as filtered" "$KH/.config/polybar/active-env.sh" 'filtered'
+assert_contains "the pill flags a wanted-but-absent tunnel" "$KH/.config/polybar/active-env.sh" 'vpn down'
+assert_contains "the isolation module sits on the trust bar" "$KH/.config/polybar/config.ini" 'modules-right = isolation'
+assert_contains "the isolation module runs the generated script" "$KH/.config/polybar/config.ini" 'polybar/isolation\.sh'
+
+# The baked lookups must resolve per config.env: a whitelist env reports
+# whitelist egress, and <env>_VPN=1 marks that workspace as wanting a tunnel.
+new_sandbox
+cfg_set office_EGRESS_MODE whitelist
+cfg_set administration_VPN 1
+"$SANDBOX/host/switching.sh" > /dev/null 2>&1
+AE="$KH/.config/polybar/active-env.sh"
+# Source only the lookup header (everything before render()) so the lookups can
+# be exercised without a running i3.
+awk '/^render/{exit} {print}' "$AE" > "$SANDBOX/lookups.sh"
+. "$SANDBOX/lookups.sh"
+assert_eq "egress_of resolves the whitelist env" "whitelist" "$(egress_of 1)"
+assert_eq "egress_of keeps an open env at all" "all" "$(egress_of 2)"
+assert_eq "egress_of defaults an unknown workspace to all" "all" "$(egress_of 42)"
+assert_contains "the VPN=1 env is baked as wanting a tunnel" "$AE" '3\) return 0'
+if vpn_wanted 3; then _vpn3=0; else _vpn3=$?; fi
+assert_eq "vpn_wanted is true for the VPN=1 env" 0 "$_vpn3"
+if vpn_wanted 1; then _vpn1=0; else _vpn1=$?; fi
+assert_eq "vpn_wanted is false for a non-VPN env" 1 "$_vpn1"
+
+# The isolation module maps CONTRACT A states to bar labels and must never
+# error: a missing or unparsable status file is UNKNOWN, never a crash.
+ISO="$KH/.config/polybar/isolation.sh"
+mkdir -p "$SANDBOX/run"
+printf 'OK\t1700000000\tall envs isolated\n' > "$SANDBOX/run/st"
+ISOLATION_STATUS_FILE="$SANDBOX/run/st" sh "$ISO" > "$SANDBOX/iso.out" 2> "$SANDBOX/iso.err"
+assert_eq "the isolation module exits 0 on OK" 0 "$?"
+assert_contains "OK renders green 'isolated'" "$SANDBOX/iso.out" '#22c55e.*isolated'
+assert_eq "OK stays silent on stderr" "" "$(cat "$SANDBOX/iso.err")"
+printf 'FAIL\t1700000001\tdevelopment escaped\n' > "$SANDBOX/run/st"
+ISOLATION_STATUS_FILE="$SANDBOX/run/st" sh "$ISO" > "$SANDBOX/iso.out" 2> "$SANDBOX/iso.err"
+assert_contains "FAIL renders red 'ISOLATION FAIL'" "$SANDBOX/iso.out" '#ef4444.*ISOLATION FAIL'
+rm -f "$SANDBOX/run/st"
+ISOLATION_STATUS_FILE="$SANDBOX/run/st" sh "$ISO" > "$SANDBOX/iso.out" 2> "$SANDBOX/iso.err"
+assert_eq "a missing status file still exits 0" 0 "$?"
+assert_contains "a missing status file renders 'isolation ?'" "$SANDBOX/iso.out" 'isolation \?'
+assert_eq "a missing status file stays silent on stderr" "" "$(cat "$SANDBOX/iso.err")"
+printf 'garbage\n' > "$SANDBOX/run/st"
+ISOLATION_STATUS_FILE="$SANDBOX/run/st" sh "$ISO" > "$SANDBOX/iso.out" 2> "$SANDBOX/iso.err"
+assert_contains "an unparsable status file renders 'isolation ?'" "$SANDBOX/iso.out" 'isolation \?'
+
 # Disabling an env removes its hotkey and viewer but not the others' numbers.
 new_sandbox
 cfg_set development_ENABLED 0

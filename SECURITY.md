@@ -27,7 +27,7 @@ Highest-priority concerns:
   whitelist, non-bypassable VPN, USB lockdown, or disk encryption are all meant
   to be enforced on the host and invisible to guests.
 - **Secret exposure** — secrets leaking into the built image, into git, or being
-  left at rest after `environments/scrub-secrets.sh` should have removed them.
+  left at rest after `src/environments/scrub-secrets.sh` should have removed them.
 - **Trusted-base weaknesses** — anything that expands the minimal Alpine host's
   attack surface or grants the unprivileged `kiosk` user unintended power.
 
@@ -39,5 +39,14 @@ Highest-priority concerns:
 - Opt-in features flagged EXPERIMENTAL (disk encryption, Secure Boot, TPM
   unlock) are known to be brick-prone and are off by default; issues there are
   welcome but are treated as hardening rather than active regressions.
+- Security-relevant events (isolation-check transitions, captive-portal logins,
+  USB-to-VM routing, update checks/applies/rollbacks) are recorded in the
+  append-only `/var/log/appliance-audit.log` (mode 0600, root-only). Anything
+  that lets an unprivileged user read, forge or delete entries — or that makes
+  auditing block the action it records — is in scope.
+- The update channel (`host/update.sh`) fails closed: with no `UPDATE_GPG_FPR`
+  pinned it refuses to install anything. A way to make it accept code not
+  signed by the pinned key is a vulnerability; `UPDATE_INSECURE=1` is an
+  explicit operator downgrade and is not one.
 - Secrets belong only in the git-ignored `config.env` or on the appliance, never
   baked into a shipped image.

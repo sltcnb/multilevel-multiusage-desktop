@@ -21,7 +21,7 @@
 #
 # BOOTSTRAP ORDER (important): the portal must be cleared BEFORE creating the VMs
 #   — their cloud-init needs internet on first boot:
-#     operator: Super+p (portal login) -> ./setup.sh 3 (create) -> ./setup.sh 4 (isolate)
+#     operator: Super+p (portal login) -> ./setup-machine.sh 3 (create) -> ./setup-machine.sh 4 (isolate)
 # =============================================================================
 set -euo pipefail
 
@@ -30,6 +30,9 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/../lib/common.sh"
 require_root
 load_config
+# Provision the audit log and the root-owned drop directory while we are root,
+# so the kiosk-run helper written below has somewhere to record its login.
+audit_init
 
 # Overridable: connectivity-check URL that returns 204 when NOT behind a portal.
 : "${PORTAL_PROBE_URL:=http://connectivitycheck.gstatic.com/generate_204}"
@@ -76,12 +79,24 @@ cat > "$PORTAL_SH" <<EOF
 # Entra/OAuth sign-in. NAT means authenticating this host MAC frees all VMs.
 PROBE="$PORTAL_PROBE_URL"
 BROWSER="$PORTAL_BROWSER"
+# A portal login is an authentication event, so CONTRACT B wants it in the audit
+# log — but this helper runs as the UNPRIVILEGED kiosk user, which must not be
+# able to write (or even read) a 0600 root-owned log. Rather than widen the log
+# or give the desktop a privilege, we reuse audit_event() from the shared
+# library: for a non-root caller it drops the event into the root-owned,
+# unreadable spool directory (mode 1733) and the next root-run audit_event folds
+# it into the log. Nothing here needs root and nothing here can read the log.
+AUDIT_LIB="$HERE/../lib/common.sh"
 EOF
 cat >> "$PORTAL_SH" <<'EOF'
+[ -r "$AUDIT_LIB" ] && . "$AUDIT_LIB"
+# An appliance whose /opt tree moved must still be able to log in to the WiFi.
+command -v audit_event >/dev/null 2>&1 || audit_event() { :; }
 
 # Are we already online (portal cleared)?
 code="$(curl -s -o /dev/null -w '%{http_code}' -m 5 "$PROBE" || echo 000)"
 if [ "$code" = "204" ]; then
+  audit_event portal-login result=already-online
   notify_ok() { command -v i3-nagbar >/dev/null 2>&1 && \
     i3-nagbar -t warning -m "Already online — no portal login needed." & }
   notify_ok
@@ -90,7 +105,15 @@ fi
 
 # Find the URL the portal redirects us to (the Entra login entry point).
 portal_url="$(curl -s -o /dev/null -w '%{redirect_url}' -m 5 "$PROBE" || true)"
-[ -n "$portal_url" ] || portal_url="http://neverssl.com"   # forces a redirect
+if [ -n "$portal_url" ]; then
+  result=opened
+else
+  portal_url="http://neverssl.com"   # forces a redirect
+  result=no-portal-found
+fi
+
+# Log BEFORE exec: exec replaces this process, so anything after it never runs.
+audit_event portal-login "result=$result"
 
 # Launch the browser on the portal. User completes Entra OAuth + MFA here.
 exec "$BROWSER" --new-window "$portal_url"
@@ -134,6 +157,6 @@ MANUAL (each session / after portal timeout):
   2. Sign in (OAuth + MFA)
   3. Close browser; all VMs now have internet (host MAC authorized via NAT)
 
-Bootstrap: do the portal login BEFORE ./environments/create.sh (guests need internet
+Bootstrap: do the portal login BEFORE ./src/environments/create.sh (guests need internet
 for cloud-init on first boot).
 EOF

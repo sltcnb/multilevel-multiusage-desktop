@@ -18,7 +18,7 @@ changes must not weaken environment isolation or the trusted computing base.
 
 ## Shell style
 
-- Target POSIX `sh` for `lib/common.sh` (Alpine's default is busybox ash);
+- Target POSIX `sh` for `src/lib/common.sh` (Alpine's default is busybox ash);
   scripts that need bashisms declare `#!/bin/bash`.
 - Every executable script starts with `set -euo pipefail` (bash) or `set -eu`
   (POSIX sh), checks for root where needed (`require_root`), and validates its
@@ -30,7 +30,13 @@ changes must not weaken environment isolation or the trusted computing base.
 Run ShellCheck locally — CI runs the same check and fails on warnings:
 
 ```sh
-shellcheck -x -S warning lib/*.sh host/*.sh environments/*.sh installer/*.sh build/*.sh
+shellcheck -x -S warning setup-image.sh setup-machine.sh src/lib/*.sh src/host/*.sh src/environments/*.sh src/installer/*.sh src/build/*.sh tests/*.sh
+```
+
+And the test suite (runs in a privileged Alpine Docker container):
+
+```sh
+./tests/run.sh
 ```
 
 Where practical, test on a spare machine or VM. Several features

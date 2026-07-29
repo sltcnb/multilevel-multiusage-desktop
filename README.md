@@ -60,7 +60,7 @@ list of IPs/CIDRs, everything else dropped — which is handy for the sensitive
 `administration` VM. nftables matches IP addresses, not hostnames, so for
 name-based rules you'd point the whitelist at a filtering proxy.
 
-`environments/isolate.sh` builds all of this and then **verifies** it: from
+`src/environments/isolate.sh` builds all of this and then **verifies** it: from
 inside each guest it pings every other subnet (must fail) and the internet (must
 succeed), and it checks on the host that every drop rule is actually live. A
 failed check is a failed run — the script exits non-zero, so a breach can't slip
@@ -68,13 +68,62 @@ by as a warning in a boot log. Checks that couldn't run yet (guest still
 booting, agent not up) are reported as skipped and don't fail the run, but the
 script tells you isolation is not fully verified until you re-run it.
 
+## Continuous assurance: the isolation watch
+
+`isolate.sh` proves isolation once, at setup — after that, nothing used to look
+again. A ruleset can be flushed, a libvirt network redefined, a script half
+re-run, and the machine keeps presenting three environments that no longer have
+a fence between them. `src/host/isolation-watch.sh` is the recurring check: every
+minute (busybox crond on the appliance, a systemd timer elsewhere) it asserts
+that every inter-environment DROP rule is still live in the kernel, and
+publishes the verdict to `/run/appliance/isolation.status` — one TAB-separated
+line, `STATE EPOCH DETAIL`, with STATE one of `OK`, `FAIL`, `UNKNOWN`.
+
+The contract is deliberately pessimistic. The file lives on a tmpfs, so it is
+gone after a reboot: the answer is UNKNOWN until the first check of the new
+boot, never a stale OK inherited from the previous one. A missing or unparsable
+file also means UNKNOWN, and readers must never crash on it. Anything that wants
+to show "is it still isolated?" reads this file — the trust bar and the operator
+TUI's status dashboard both surface the verdict from it. Running it by hand
+(`src/host/isolation-watch.sh --once`) exits 0/1/2 for OK/FAIL/UNKNOWN.
+
+The watch is installed automatically by `src/environments/isolate.sh`.
+`ISOLATION_WATCH=0` disables it; `ISOLATION_WATCH_INTERVAL` sets the period in
+seconds (cron rounds sub-minute values up to a whole minute). Only state
+**transitions** are written to the audit log, so the one line that matters —
+isolation breaking, or coming back — isn't buried under a day of identical OKs.
+
+## Audit trail
+
+Security-relevant events are recorded in an append-only log,
+`/var/log/appliance-audit.log` (mode 0600, root-only; it rotates at 256 KiB,
+keeping one `.1` generation). One line per event:
+
+```
+2026-07-29T10:55:30Z isolation-check state=FAIL prev=OK pairs=4/6 missing=office->development
+```
+
+Recorded today: isolation-check state transitions (the watch), captive-portal
+logins, USB-to-VM routing decisions, and update checks/applications/rollbacks.
+Two properties matter more than the list:
+
+- **It never blocks the action it records.** If the log can't be written, the
+  portal login, USB routing or update still happens — auditing is a witness,
+  not a gate.
+- **The kiosk user can report events without being able to read the log.**
+  Unprivileged events (portal login, the USB chooser) go through a mode-1733
+  spool directory and are folded into the real log by the next root-run event.
+
+Read it as root with `tail -f /var/log/appliance-audit.log`, from the operator
+TUI's audit view, or with `audit_tail` from `src/lib/common.sh`.
+
 ## Getting it onto a machine
 
 The workflow is: build an image on your Mac (or any Docker host), flash it to a
 USB stick, boot the target machine from the stick once to install onto its
 internal disk, then remove the stick.
 
-### 1. Build the image
+### 1. Configure and build the image
 
 You need Docker running. The build runs inside a privileged container so it works
 the same on an Apple-silicon Mac (it emulates x86-64) as on a Linux box.
@@ -82,8 +131,17 @@ the same on an Apple-silicon Mac (it emulates x86-64) as on a Linux box.
 ```sh
 git clone <your-repo-url> multilevel
 cd multilevel
-./build/make-image.sh
+./setup-image.sh
 ```
+
+`setup-image.sh` is the recommended entry point: an interactive wizard that runs
+on the build machine (macOS or Linux, no dependencies) and walks you through the
+environments, the credentials, Wi-Fi, the security toggles, the supply-chain
+pinning and the build options. It then writes `config.env` (mode 0600; an
+existing one is backed up first) and offers to run the build for you.
+`./setup-image.sh --defaults` writes a default `config.env` non-interactively.
+You can equally copy `config.env.example` by hand and run
+`./src/build/make-image.sh` yourself — the wizard only automates that.
 
 You get `out/appliance-alpine.qcow2` (~2 GB) after a few minutes.
 
@@ -92,7 +150,7 @@ boots with your Wi-Fi / per-env / password settings already in place — no edit
 on the box, and the installer preserves it (hardware-detected values are still
 re-detected on the real machine at first boot). Because `config.env` holds secrets
 (Wi-Fi PSK, passwords), **the resulting image is sensitive — don't distribute it**.
-Skip baking with `BAKE_CONFIG=0 ./build/make-image.sh` (the appliance then starts
+Skip baking with `BAKE_CONFIG=0 ./src/build/make-image.sh` (the appliance then starts
 from `config.env.example` and you edit it on tty2). The shipped image keeps root
 **locked**; the installed system sets root at first boot from `HOST_ROOT_PASSWORD`
 (default `generate` → a strong random one recorded in `/root/generated-secrets.txt`).
@@ -120,10 +178,10 @@ Before booting:
   passthrough.
 - Set the machine to boot from USB.
 - Turn Secure Boot **off** for now (the image ships unsigned; you can turn it back
-  on later with `host/secure-boot.sh`).
+  on later with `src/host/secure-boot.sh`).
 
 The image is built for UEFI, so pick the `UEFI: <your USB>` entry. If the machine
-is legacy-BIOS only, rebuild with `BOOT_MODE=BIOS ./build/make-image.sh`.
+is legacy-BIOS only, rebuild with `BOOT_MODE=BIOS ./src/build/make-image.sh`.
 
 ### 4. Boot the stick — it installs itself
 
@@ -133,7 +191,7 @@ countdown, wipes the disk, installs the appliance, and powers off. No network an
 no package downloads are needed for this step.
 
 If you'd rather do it by hand, hit `Ctrl+Alt+F2` and run
-`cd /opt/appliance && ./installer/install-to-disk.sh`.
+`cd /opt/appliance && ./src/installer/install-to-disk.sh`.
 
 ### 5. Remove the stick and power on
 
@@ -150,16 +208,21 @@ password immediately with `passwd`).
 
 ```sh
 cd /opt/appliance
-vi config.env        # set Wi-Fi, guest password, per-env options
-./setup.sh           # numbered menu of the steps you launch (Wi-Fi/create/isolate)
+./setup-machine.sh           # the operator console: status dashboard + guided setup
 ```
 
-`setup.sh` is the easy path — it lists only the operator steps, in order, so you
-don't have to remember which script to run. Each step below is also runnable
-directly; `./setup.sh 3` runs step 3.
+With no arguments, `setup-machine.sh` opens the appliance TUI — a full-screen console
+(`dialog` when present, a plain numbered menu otherwise) with a status dashboard
+(isolation verdict, VM states, uplink, recent audit events), a guided first
+setup (Wi-Fi → captive portal → create the VMs → isolate + verify), and
+operations (guest passwords, VPN, scrubbing secrets, secure boot, USB allow,
+checking/applying/rolling back updates, viewing the audit log). This is the easy
+path — you don't have to remember which script to run. `./setup-machine.sh --menu`
+keeps the old numbered step menu, and `./setup-machine.sh <n>` runs step n directly;
+each step below is also runnable as its own script.
 
 If you're on Wi-Fi, set `WIFI_SSID` / `WIFI_PSK` / `WIFI_COUNTRY` and run
-`./host/wifi.sh` (the passphrase is hashed, never stored in the clear). On wired
+`./src/host/wifi.sh` (the passphrase is hashed, never stored in the clear). On wired
 ethernet you can skip this.
 
 If your Wi-Fi uses a captive portal with interactive Microsoft Entra / OAuth
@@ -168,19 +231,21 @@ VM gets online through the host (they all share the host's single connection via
 NAT). Do this **before** creating the VMs, because their first boot needs
 internet.
 
-Before the first run, it's recommended to pin the SHA256 of each base cloud
-image you'll actually use (`UBUNTU_IMG_SHA256` / `ARCH_IMG_SHA256` /
-`DEBIAN_IMG_SHA256` in `config.env` — see the comments there for where to get
-the vendor's published checksum). Pinning is optional by default: an unset hash
-downloads without an integrity check (with a warning), while a set hash is
-strictly verified and a mismatch deletes the file and aborts. Set
+Before the first run, it's recommended to pin each base cloud image you'll
+actually use, one of two ways (`config.env.example` explains both in detail):
+pin the vendor's own signature (`UBUNTU_IMG_GPG_FPR` / `ARCH_IMG_GPG_FPR` /
+`DEBIAN_IMG_GPG_FPR`, verified automatically on every run), or pin a SHA256 by
+hand (`*_IMG_SHA256` — this wins when both are set). Pair a hand-pinned hash
+with `*_IMG_DATE` (the vendor's dated, immutable directory) or it goes stale on
+the next vendor rebuild. Pinning is optional by default: with neither set, the
+image downloads without an integrity check (with a warning). Set
 `REQUIRE_IMG_SHA256=1` to make a missing pin a hard error.
 
 Then build and lock down the VMs:
 
 ```sh
-./environments/create.sh     # downloads cloud images, provisions each enabled VM
-./environments/isolate.sh    # per-VM networks + firewall + the isolation checks
+./src/environments/create.sh     # downloads cloud images, provisions each enabled VM
+./src/environments/isolate.sh    # per-VM networks + firewall + the isolation checks
 ```
 
 `isolate.sh` prints PASS/FAIL for every check — each VM must reach the internet
@@ -192,7 +257,7 @@ one automatic reboot into the desktop — so the first boot is slow by design.
 Watch it with `virsh console <env>` (then in-guest `tail -f /var/log/de-install.log`).
 
 To change a guest's password later without rebuilding, use
-`./environments/set-guest-password.sh <env>` (live, via the guest agent).
+`./src/environments/set-guest-password.sh <env>` (live, via the guest agent).
 
 Reboot to confirm the full experience: you land on the office VM full-screen and
 `Super+1/2/3` switches between them. `Super+Return` opens a terminal and
@@ -221,7 +286,7 @@ environment should get it. The key is then USB-passed-through to **only** that V
 and detached from any other — it's never shared across environments. A udev rule
 triggers the chooser on insert, and `Super+y` re-runs it manually. usbguard is
 told to admit YubiKeys specifically so they aren't blocked by the default USB
-lockdown. See `host/usb-to-vm.sh`.
+lockdown. See `src/host/usb-to-vm.sh`.
 
 ## Configuration
 
@@ -246,7 +311,7 @@ administration_ENABLED=1; administration_OS="arch"; administration_DE="gnome"
 - **Desktop** — `<env>_DE` accepts `gnome`, `xfce4`, `kde`, `mate`, `lxqt`, or
   `none` for a CLI-only guest.
 - **Egress** — `<env>_EGRESS_MODE=all|whitelist` plus `<env>_EGRESS_ALLOW="ip ip"`.
-- **VPN** — `<env>_VPN=1` with WireGuard details, then run `environments/vpn.sh`.
+- **VPN** — `<env>_VPN=1` with WireGuard details, then run `src/environments/vpn.sh`.
 - **Custom APT source** — point apt-family guests (ubuntu/debian) at your own
   package source instead of the public archives: `APT_MIRROR` sets a base mirror
   (via cloud-init `apt.primary`) and `APT_PROXY` sets a caching proxy such as
@@ -264,7 +329,7 @@ Any of these can be set to `"generate"` (or left empty) and the scripts will
 create a strong random value, use it, and record it in
 `/root/generated-secrets.txt`: `HOST_ROOT_PASSWORD`, `GUEST_PASSWORD`,
 `LUKS_PASS`, and each `<env>_DISK_PASS`. Once everything is set up,
-`environments/scrub-secrets.sh` blanks them back out of `config.env`.
+`src/environments/scrub-secrets.sh` blanks them back out of `config.env`.
 
 Don't bake secrets into a shipped image — set them on the appliance instead.
 
@@ -293,11 +358,13 @@ Don't bake secrets into a shipped image — set them on the appliance instead.
 ## Repository layout
 
 ```
+setup-image.sh            interactive build-machine wizard: writes config.env, runs the build
 config.env.example        template for config.env (secrets live only in config.env, git-ignored)
-lib/common.sh             shared helpers: logging, guards, config, the environment model
-build/make-image.sh       build the bootable Alpine image (runs in Docker)
-installer/install-to-disk.sh  clone the image onto the internal disk, optional LUKS
-host/
+setup-machine.sh          on the appliance: the operator TUI (status dashboard, guided setup, operations)
+src/lib/common.sh             shared helpers: logging, guards, config, the environment model, the audit log
+src/build/make-image.sh       build the bootable Alpine image (runs in Docker)
+src/installer/install-to-disk.sh  clone the image onto the internal disk, optional LUKS
+src/host/
   detect-and-install.sh   detect CPU/RAM/disk, install packages, nested virt, resource split
   configure.sh            kiosk user, autologin, auto-startx, usbguard default-deny
   harden.sh               kernel sysctl hardening + optional host firewall
@@ -306,17 +373,21 @@ host/
   captive-portal.sh       optional Entra/OAuth captive-portal helper (Super+p)
   usb-allow.sh            whitelist a USB device past the default-deny policy
   usb-to-vm.sh            route a YubiKey/USB device to a chosen VM (Super+y / auto on plug)
+  isolation-watch.sh      recurring check that the isolation rules are still live + status file
+  update.sh               signed in-place update of the appliance tree (--check/--rollback)
+  tui.sh                  the operator console behind setup-machine.sh (dashboard, guided setup, operations)
   secure-boot.sh          optional Secure Boot + TPM PCR binding (experimental)
   tpm-initramfs-hook.sh   optional hands-free TPM unlock of the encrypted root
-environments/
+src/environments/
   create.sh               build each enabled VM, install its desktop, optional per-VM LUKS
   isolate.sh              per-VM networks + all-pairs firewall drop + verification
   vpn.sh                  optional per-VM non-bypassable WireGuard tunnel
+  set-guest-password.sh   change a running guest's password via the guest agent
   scrub-secrets.sh        wipe secrets from config.env after setup
 ```
 
-Every script is `set -euo pipefail`, checks for root and its dependencies, and is
-safe to re-run.
+Every script is `set -eu` (`set -euo pipefail` under bash), checks for root and
+its dependencies, and is safe to re-run.
 
 ## How the automated install of guests works
 
@@ -330,7 +401,7 @@ possible but brittle, so the cloud image is the better choice there too.)
 
 ## Per-environment VPN
 
-`environments/vpn.sh` can give an environment its own encrypted tunnel that the
+`src/environments/vpn.sh` can give an environment its own encrypted tunnel that the
 guest cannot turn off or bypass, because it's all enforced on the host:
 
 1. A WireGuard interface is created on the host from the environment's config.
@@ -344,6 +415,34 @@ The VM just sees a normal NIC with internet; it has no way to know or change tha
 its traffic is forced through a specific tunnel. This is opt-in and needs a real
 WireGuard peer.
 
+## Updating a deployed appliance
+
+Without an updater, shipping a fix to a machine in the field means rebuilding
+the image, reflashing a stick, wiping the internal disk and losing every VM —
+which in practice means the fix never lands. `src/host/update.sh` replaces the
+`/opt/appliance` code tree in place and nothing else: `config.env`, the
+installer/first-boot markers, VM storage and the libvirt domain definitions are
+machine state and are carried across untouched. The new tree is downloaded,
+signature-verified and syntax-checked, then swapped in atomically (a rename —
+never a partial copy over the live tree), and previous trees are kept so a bad
+update can be undone:
+
+```sh
+./src/host/update.sh --check      # report what is available; change nothing
+./src/host/update.sh              # fetch, verify, swap in, re-run the host scripts
+./src/host/update.sh --rollback   # restore the previous tree
+```
+
+Signatures are mandatory because the alternative is "download and run as root":
+with `UPDATE_GPG_FPR` empty the update is refused outright (fail closed).
+`UPDATE_INSECURE=1` exists as an escape hatch and is not a supported
+configuration. Two channels: a tarball at `UPDATE_URL` with a detached
+`UPDATE_URL.sig`, or `UPDATE_CHANNEL=git` moving to a signed tag/commit from
+`UPDATE_GIT_REMOTE` / `UPDATE_GIT_REF`. `UPDATE_KEEP_BACKUPS` (default 3)
+previous trees are kept for rollback, `UPDATE_REQUIRE_VMS_OFF=1` refuses to run
+while any VM is up, and every check/apply/rollback lands in the audit log. The
+operator TUI runs the same commands from its update screen.
+
 ## Alignment with ANSSI-PA-114
 
 The appliance targets ANSSI's guidance for securing a multi-environment
@@ -353,18 +452,19 @@ but you enable it (sometimes with a firmware/hardware setting).
 | Requirement | Status | How it's met |
 |-------------|--------|--------------|
 | One environment per VM (preferred over sandboxes) | Built-in | each environment is its own KVM VM |
-| Hardened host, minimal trusted base | Built-in | minimal Alpine, no user apps; `host/harden.sh` sysctl hardening + optional host firewall |
+| Hardened host, minimal trusted base | Built-in | minimal Alpine, no user apps; `src/host/harden.sh` sysctl hardening + optional host firewall |
 | Desktop runs unprivileged | Built-in | autologin an unprivileged `kiosk` user; root reserved for tty2 |
 | Always know the active environment | Built-in | the always-visible, color-coded trust bar |
-| Network isolation, no impersonation between environments | Built-in | separate bridge + subnet per env, nftables all-pairs drop |
+| Network isolation, no impersonation between environments | Built-in | separate bridge + subnet per env, nftables all-pairs drop, continuously re-verified by `src/host/isolation-watch.sh` |
 | Per-environment outbound control | Built-in | `<env>_EGRESS_MODE=whitelist` |
-| Peripheral compartmentalization (USB) | Built-in | usbguard default-deny; whitelist with `host/usb-allow.sh`; YubiKey routed to one VM |
-| No secrets left at rest | Built-in | `environments/scrub-secrets.sh` blanks passwords/keys after setup |
+| Peripheral compartmentalization (USB) | Built-in | usbguard default-deny; whitelist with `src/host/usb-allow.sh`; YubiKey routed to one VM |
+| No secrets left at rest | Built-in | `src/environments/scrub-secrets.sh` blanks passwords/keys after setup |
+| Traceability of security events | Built-in | append-only audit log (`/var/log/appliance-audit.log`): isolation transitions, portal logins, USB routing, updates |
 | Memory encryption (anti cold-boot) | Opt-in | `mem_encrypt=on` set; full DRAM encryption needs TSME enabled in firmware |
 | Disk encryption | Opt-in | LUKS2 via `ENCRYPT=1`; key auto-generated if none supplied |
 | Per-environment user-keyed encryption | Opt-in | per-VM LUKS via `<env>_ENCRYPT_DISK=1` + `<env>_DISK_PASS` |
-| Dedicated non-bypassable VPN per environment | Opt-in | host-enforced WireGuard via `<env>_VPN=1` + `environments/vpn.sh` |
-| Secure/measured boot + TPM | Opt-in | `host/secure-boot.sh` (Secure Boot + TPM PCR bind) + `host/tpm-initramfs-hook.sh` |
+| Dedicated non-bypassable VPN per environment | Opt-in | host-enforced WireGuard via `<env>_VPN=1` + `src/environments/vpn.sh` |
+| Secure/measured boot + TPM | Opt-in | `src/host/secure-boot.sh` (Secure Boot + TPM PCR bind) + `src/host/tpm-initramfs-hook.sh` |
 
 The opt-in items are left off by default for good reason: some depend on a
 firmware toggle the OS can't set (memory encryption needs TSME in the BIOS), and
@@ -374,14 +474,14 @@ encryption).
 
 ## Development
 
-Every script is `set -euo pipefail` (or `set -eu` for the POSIX `lib/common.sh`),
+Every script is `set -euo pipefail` (or `set -eu` for the POSIX `src/lib/common.sh`),
 checks for root and its dependencies, and is safe to re-run. Continuous
 integration runs [ShellCheck](https://www.shellcheck.net/) and the test suite on
 every push and pull request; ShellCheck fails on warnings and above. Run both
 locally before opening a PR:
 
 ```sh
-shellcheck -x -S warning lib/*.sh host/*.sh environments/*.sh installer/*.sh build/*.sh tests/*.sh
+shellcheck -x -S warning setup-image.sh setup-machine.sh src/lib/*.sh src/host/*.sh src/environments/*.sh src/installer/*.sh src/build/*.sh tests/*.sh
 ./tests/run.sh
 ```
 
@@ -414,6 +514,10 @@ IN_CONTAINER=1 ./tests/run.sh    # already on a suitable Linux host, as root
 | `tests/test-isolate.sh` | the isolation ruleset, egress policy, and the verification result |
 | `tests/test-host.sh`    | hardening, the kiosk desktop, switching/trust bar, Wi-Fi, captive portal |
 | `tests/test-ops.sh`     | the setup menu, USB routing, password changes, VPN, secret scrubbing |
+| `tests/test-audit.sh`   | the audit log: append-only, rotation, the unprivileged spool, never aborting its caller |
+| `tests/test-watch.sh`   | the isolation watch: status-file contract, transitions, the recurring timer |
+| `tests/test-setup-image.sh` | the build-machine wizard: defaults mode, piped answers, config.env backup/atomicity, interrupt safety |
+| `tests/test-tui.sh`     | the operator console: menu dispatch, dashboard resilience, the setup-machine.sh entry points |
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for style and review expectations.
 
@@ -426,17 +530,25 @@ shipped image.
 
 Supply-chain integrity:
 
-- **Base cloud images.** Pinning is optional but strict once set. With no
-  `*_IMG_SHA256` the image downloads unverified and prints a warning; with a hash
-  set, every run — fresh download or cache hit — is verified, and a mismatch
-  deletes the file and aborts. `REQUIRE_IMG_SHA256=1` makes a missing pin a hard
-  error.
-- **Third-party apt keys.** `environments/create.sh` refuses to trust a Microsoft
+- **Base cloud images.** Pinning is optional but strict once set, and comes in
+  two forms: pin the vendor's own signature (`<OS>_IMG_GPG_FPR`, verified on
+  every run against exactly that key), or pin a build by hand
+  (`<OS>_IMG_SHA256` — this wins when both are set). With neither, the image
+  downloads unverified and prints a warning; a failed verification deletes the
+  file and aborts. Pair a hand-pinned hash with `<OS>_IMG_DATE` (the vendor's
+  dated, immutable directory) or it goes stale on the next vendor rebuild.
+  `REQUIRE_IMG_SHA256=1` makes a missing pin a hard error.
+- **Appliance updates.** `src/host/update.sh` fails closed: with no
+  `UPDATE_GPG_FPR` pinned it refuses to install anything, because an unverified
+  "download and run as root" is a remote root shell for whoever answers the
+  URL. `UPDATE_INSECURE=1` is an explicit operator downgrade, not a supported
+  configuration.
+- **Third-party apt keys.** `src/environments/create.sh` refuses to trust a Microsoft
   or Wazuh signing key whose fingerprint doesn't match the pinned value after
   import, and refuses to build the seed at all if you blank a fingerprint that
   the current config needs.
 
-`host/harden.sh` always sets `PermitEmptyPasswords no` and denies the
+`src/host/harden.sh` always sets `PermitEmptyPasswords no` and denies the
 passwordless kiosk console account over SSH, regardless of the
 `HARDEN_INPUT`/`HOST_SSH` firewall settings.
 

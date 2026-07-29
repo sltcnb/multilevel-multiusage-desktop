@@ -290,10 +290,30 @@ done
 cat <<EOF
 
 Isolation verification complete: $PASSED passed, $FAILED failed, $SKIPPED skipped.
-If SKIPPED: wait for guests to finish cloud-init, then re-run:  ./environments/isolate.sh
+If SKIPPED: wait for guests to finish cloud-init, then re-run:  ./src/environments/isolate.sh
 EOF
 
-# Exit status reflects the SECURITY result, so a caller (setup.sh, a first-boot
+# -----------------------------------------------------------------------------
+# 5. Continuous assurance. Everything above is a snapshot: it proves isolation
+#    at this instant and exits, after which a flushed ruleset or a redefined
+#    libvirt network would go unnoticed until someone re-ran this script.
+#    Publish the verdict where anything can read it and install the recurring
+#    check, so the machine can still answer "am I isolated?" a week from now.
+#
+#    Additive on purpose: neither call may influence this script's exit status,
+#    which reports THIS run's verification result and nothing else. It is placed
+#    before the exit block so the status file is populated even on a failed run
+#    (a broken machine especially needs a readable verdict).
+# -----------------------------------------------------------------------------
+WATCH="$HERE/../host/isolation-watch.sh"
+if [ -x "$WATCH" ]; then
+  "$WATCH" --install-timer || warn "Could not install the recurring isolation check — run src/host/isolation-watch.sh --install-timer by hand."
+  "$WATCH" --once || true
+else
+  warn "src/host/isolation-watch.sh not found — isolation will only ever be verified when this script is run by hand."
+fi
+
+# Exit status reflects the SECURITY result, so a caller (setup-machine.sh, a first-boot
 # service, CI) can tell a verified-isolated appliance from a broken one without
 # scraping the log. Skips are not failures — they mean "not yet testable".
 if [ "$FAILED" -gt 0 ]; then

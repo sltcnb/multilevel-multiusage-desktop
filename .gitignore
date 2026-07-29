@@ -19,6 +19,9 @@ base-*.qcow2
 *.part
 .DS_Store
 
+# Local AI-tool settings (machine-local, not project config)
+.claude/
+
 # guest agent artifacts + stray screenshots
 *.pkg
 docs/img/
