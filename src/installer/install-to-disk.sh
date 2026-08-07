@@ -23,6 +23,12 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 require_root
 require_cmds dd lsblk findmnt growpart resize2fs
 
+# config.env carries the install choices (ENCRYPT, LUKS_PASS). Tolerate its
+# absence (BAKE_CONFIG=0 images): the defaults below then give the plain
+# dd-clone. load_config is NOT used — it would die on a config-less image.
+# shellcheck disable=SC1090
+[ -f "$CONFIG_ENV" ] && . "$CONFIG_ENV"
+
 # -----------------------------------------------------------------------------
 # 1. Identify the disk we are BOOTED FROM (the USB) so we never target it.
 # -----------------------------------------------------------------------------
@@ -118,18 +124,11 @@ if [ "${ENCRYPT:-0}" = "1" ]; then
   # Requires LUKS_PASS set in config.env (used non-interactively).
   # ===========================================================================
   require_cmds cryptsetup mkfs.ext4 mkfs.vfat blkid grub-install
-  # If no passphrase was provided, GENERATE a strong one, save it to a
-  # root-only keyfile, and print it. The operator MUST record it — it is the
-  # only way to unlock the disk (until TPM auto-unlock is set up via
-  # host/secure-boot.sh). openssl gives 32 bytes base64.
-  if [ -z "${LUKS_PASS:-}" ] || [ "${LUKS_PASS:-}" = "generate" ]; then
-    LUKS_PASS="$(openssl rand -base64 32 2>/dev/null || head -c24 /dev/urandom | base64)"
-    keyout="/root/luks-key.txt"
-    umask 077; printf '%s\n' "$LUKS_PASS" > "$keyout"
-    warn "No LUKS_PASS set — GENERATED a random LUKS passphrase."
-    warn "Saved to $keyout on the NEW system. RECORD IT NOW (shown once):"
-    printf '\n    LUKS passphrase: %s\n\n' "$LUKS_PASS" >&2
-  fi
+  # The passphrase must be explicit in config.env — secrets are never
+  # auto-generated (a generated LUKS passphrase the operator never recorded
+  # makes the disk unrecoverable).
+  [ -n "${LUKS_PASS:-}" ] && [ "${LUKS_PASS:-}" != "generate" ] || \
+    die "ENCRYPT=1 but LUKS_PASS is not set in config.env. Set an explicit passphrase — secrets are never auto-generated."
   esp="/dev/${target}${tgt_p}1"; luks="/dev/${target}${tgt_p}2"
   log "Partitioning /dev/$target (ESP + LUKS) ..."
   sgdisk --zap-all "/dev/$target"
@@ -142,22 +141,45 @@ if [ "${ENCRYPT:-0}" = "1" ]; then
   mkfs.ext4 -q -F /dev/mapper/cryptroot
   mkdir -p /mnt/src /mnt/dst
   log "Copying root filesystem from USB into the encrypted volume ..."
-  mount -o ro "/dev/${usb_disk}${usb_p}2" /mnt/src
   mount /dev/mapper/cryptroot /mnt/dst
-  cp -a /mnt/src/. /mnt/dst/
-  # Save the generated key inside the encrypted volume (safe: only readable once
-  # the disk is already unlocked) so it is recoverable after the USB is gone.
-  [ -f /root/luks-key.txt ] && { mkdir -p /mnt/dst/root; cp /root/luks-key.txt /mnt/dst/root/luks-key.txt; chmod 600 /mnt/dst/root/luks-key.txt; }
-  umount /mnt/src
+  # The USB root IS the running / — ext4 refuses a second mount of it ("already
+  # mounted on /", "would change RO state"), so stream it with tar instead,
+  # excluding the pseudo-filesystems and /mnt itself (the destination is under
+  # it — copying it would recurse).
+  ( cd / && tar cf - \
+      --exclude=./proc --exclude=./sys --exclude=./dev --exclude=./run \
+      --exclude=./mnt --exclude=./media --exclude=./tmp . ) \
+    | tar xf - -C /mnt/dst
+  mkdir -p /mnt/dst/proc /mnt/dst/sys /mnt/dst/dev /mnt/dst/run /mnt/dst/mnt /mnt/dst/media
+  mkdir -p /mnt/dst/tmp && chmod 1777 /mnt/dst/tmp
   log "Copying ESP (kernel/initramfs/grub) ..."
   mount "$esp" /mnt/dst/boot 2>/dev/null || { mkdir -p /mnt/dst/boot; mount "$esp" /mnt/dst/boot; }
-  mount -o ro "/dev/${usb_disk}${usb_p}1" /mnt/src
-  cp -a /mnt/src/. /mnt/dst/boot/
-  umount /mnt/src
+  # Same story for the ESP: it is already mounted at /boot on the running USB.
+  if mount -o ro "/dev/${usb_disk}${usb_p}1" /mnt/src 2>/dev/null; then
+    cp -a /mnt/src/. /mnt/dst/boot/
+    umount /mnt/src
+  else
+    cp -a /boot/. /mnt/dst/boot/
+  fi
   luuid="$(blkid -s UUID -o value "$luks")"
   espuuid="$(blkid -s UUID -o value "$esp")"
-  # initramfs must include cryptsetup so it can unlock root at boot.
-  echo 'features="ata base ide scsi usb virtio ext4 cryptsetup keymap"' > /mnt/dst/etc/mkinitfs/mkinitfs.conf
+  # initramfs must include cryptsetup so it can unlock root at boot — and the
+  # storage driver the ROOT device sits on: virtio covers VMs, but real laptops
+  # boot from NVMe (and some from eMMC/SD). Without nvme the LUKS device never
+  # appears and the boot dies with "mounting /dev/mapper/cryptroot on /sysroot
+  # failed: No such file or directory" right after (or instead of) the prompt.
+  # Keyboard at the passphrase prompt: PS/2 (i8042/atkbd) is built into the
+  # kernel and USB HID comes with the usb feature, but a keyboard behind the
+  # I2C bus (some AMD/Intel ultrabooks) needs i2c-hid — nothing else pulls it
+  # in, and a dead keyboard at the prompt looks exactly like "the passphrase
+  # is rejected".
+  cat > /mnt/dst/etc/mkinitfs/features.d/i2chid.modules <<'I2C'
+kernel/drivers/i2c/busses/i2c-piix4.ko*
+kernel/drivers/i2c/busses/i2c-i801.ko*
+kernel/drivers/hid/i2c-hid
+kernel/drivers/hid/hid-generic.ko*
+I2C
+  echo 'features="ata base ide scsi usb virtio nvme mmc ext4 cryptsetup keymap i2chid"' > /mnt/dst/etc/mkinitfs/mkinitfs.conf
   cat > /mnt/dst/etc/fstab <<F
 /dev/mapper/cryptroot / ext4 rw,relatime 0 1
 UUID=$espuuid /boot vfat rw,relatime 0 2
@@ -165,9 +187,14 @@ F
   cat > /mnt/dst/etc/default/grub <<G
 GRUB_TIMEOUT=2
 GRUB_DISTRIBUTOR="Appliance"
-GRUB_CMDLINE_LINUX_DEFAULT="cryptroot=UUID=$luuid cryptdm=cryptroot i8042.nomux i8042.noloop console=tty0 quiet"
+GRUB_CMDLINE_LINUX_DEFAULT="cryptroot=UUID=$luuid cryptdm=cryptroot modules=ext4 i8042.nomux i8042.noloop console=tty0 quiet"
 GRUB_CMDLINE_LINUX="root=/dev/mapper/cryptroot"
 GRUB_ENABLE_CRYPTODISK=n
+# Text console, not gfxterm: the mkconfig-generated gfxterm renders a BLACK
+# screen on real firmware and OVMF alike (the machine looks dead before the
+# kernel ever starts). The USB image's hand-written grub.cfg is console-mode
+# for the same reason.
+GRUB_TERMINAL=console
 G
   for d in dev proc sys; do mount --bind "/$d" "/mnt/dst/$d"; done
   kver="$(ls /mnt/dst/lib/modules | head -1)"
@@ -251,6 +278,6 @@ DONE. Now:
      switching, Wi-Fi, portal) with the FULL disk available, so the per-env
      resource split is sized to the real machine. Then, as ROOT on tty2
      (Ctrl+Alt+F2 — the host has no sudo by design), create the VMs:
-        cd /opt/appliance && ./setup-machine.sh     # 3) create   4) isolate + verify
+        cd /opt/appliance && ./setup-machine.sh     # 1) create   2) isolate + verify
 EOF
 fi

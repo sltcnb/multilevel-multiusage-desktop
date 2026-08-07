@@ -8,11 +8,36 @@
 
 # --- pretty logging ----------------------------------------------------------
 # All logging goes to STDERR so functions that return a value via stdout
-# (make_seed, resolve_secret, env_* helpers) are never polluted by log output.
+# (make_seed, require_secret, env_* helpers) are never polluted by log output.
 log()  { printf '\033[1;34m[*]\033[0m %s\n' "$*" >&2; }
 ok()   { printf '\033[1;32m[+]\033[0m %s\n' "$*" >&2; }
 warn() { printf '\033[1;33m[!]\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31m[x]\033[0m %s\n' "$*" >&2; exit 1; }
+
+# step "TITLE" — a bold section header, so the operator can see where they are in
+# a multi-stage script (create/isolate/build all run many sub-steps). Cosmetic.
+step() { printf '\n\033[1;36m==>\033[0m \033[1m%s\033[0m\n' "$*" >&2; }
+
+# run CMD [ARGS...] — run a NOISY command quietly. Its stdout+stderr are captured
+# and shown ONLY if it fails (or always when VERBOSE=1), so the console stays at
+# clean [*]/[+]/[!] lines instead of pages of wget/apk/qemu-img/pacman chatter —
+# while an error is never hidden. Returns the command's own exit status, so the
+# usual `run … || die` / `set -e` handling is unchanged.
+#
+# ONLY for commands whose stdout is not captured by the caller (a value-returning
+# `x="$(cmd)"` must NOT be wrapped — run redirects stdout into the log file).
+run() {
+  if [ "${VERBOSE:-0}" = "1" ]; then "$@"; return $?; fi
+  _run_log="$(mktemp 2>/dev/null || echo /tmp/run.$$.log)"
+  if "$@" >"$_run_log" 2>&1; then
+    rm -f "$_run_log"; return 0
+  fi
+  _run_rc=$?
+  warn "command failed (exit $_run_rc): $*"
+  sed 's/^/      /' "$_run_log" >&2 2>/dev/null || cat "$_run_log" >&2
+  rm -f "$_run_log"
+  return "$_run_rc"
+}
 
 # --- guards ------------------------------------------------------------------
 require_root() {
@@ -227,23 +252,14 @@ set_kv() {
   export "$key=$val"
 }
 
-# gen_secret — print a strong random secret (base64, ~32 chars).
-gen_secret() { openssl rand -base64 24 2>/dev/null | tr -d '\n' || head -c18 /dev/urandom | base64 | tr -d '\n'; }
-
-# resolve_secret KEY — return the value of config var KEY. If it is empty or the
-# literal "generate", generate a strong one, persist it to config.env, and record
-# it (once) to /root/generated-secrets.txt so the operator can retrieve it.
-resolve_secret() {
+# require_secret KEY — return the value of config var KEY. Secrets are NEVER
+# auto-generated: a value the operator did not choose is a value they cannot
+# know (a generated root/LUKS password locks them out of their own machine).
+# An empty value, or the legacy literal "generate", is a hard error.
+require_secret() {
   _k="$1"; _v="$(eval "printf '%s' \"\${${_k}:-}\"")"
-  if [ -z "$_v" ] || [ "$_v" = "generate" ]; then
-    _v="$(gen_secret)"
-    set_kv "$_k" "$_v"
-    umask 077; printf '%s=%s\n' "$_k" "$_v" >> /root/generated-secrets.txt 2>/dev/null || true
-    # Do NOT echo the value: warn() goes to stderr, which on the unattended
-    # first-boot service lands on the tty1 (kiosk) console and in rc.log. The
-    # value lives in the root-only note file; the operator reads it from there.
-    warn "Generated $_k -> saved to /root/generated-secrets.txt (record it)."
-  fi
+  [ -n "$_v" ] && [ "$_v" != "generate" ] || \
+    die "$_k is not set in config.env (secrets are never auto-generated). Set an explicit value — re-run ./setup-image.sh or edit config.env."
   printf '%s' "$_v"
 }
 

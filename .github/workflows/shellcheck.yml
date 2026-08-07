@@ -29,6 +29,7 @@ jobs:
           shellcheck -x -S warning \
             setup-image.sh \
             setup-machine.sh \
+            flash-image.sh \
             src/lib/*.sh \
             src/host/*.sh \
             src/environments/*.sh \

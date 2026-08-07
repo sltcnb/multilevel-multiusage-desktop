@@ -17,6 +17,9 @@ case "$cmd" in
               cp "$1" "$STUB_STATE/netxml-$n"; touch "$STUB_STATE/net-$n" ;;
   net-start|net-autostart|net-destroy|net-undefine) : ;;
   dominfo)    [ -f "$STUB_STATE/dom-$1" ] || exit 1 ;;
+  domstate)   # "shut off" unless the test marked the domain running.
+              [ -f "$STUB_STATE/dom-$1" ] || exit 1
+              if [ -f "$STUB_STATE/running-$1" ]; then echo "running"; else echo "shut off"; fi ;;
   define)     # reads domain XML on stdin (/dev/stdin)
               cat > "$STUB_STATE/domxml-defined"
               n="$(sed -n 's:.*<name>\(.*\)</name>.*:\1:p' "$STUB_STATE/domxml-defined" | head -1)"

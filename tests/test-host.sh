@@ -129,6 +129,11 @@ assert_contains "the pill flags whitelist egress as filtered" "$KH/.config/polyb
 assert_contains "the pill flags a wanted-but-absent tunnel" "$KH/.config/polybar/active-env.sh" 'vpn down'
 assert_contains "the isolation module sits on the trust bar" "$KH/.config/polybar/config.ini" 'modules-right = isolation'
 assert_contains "the isolation module runs the generated script" "$KH/.config/polybar/config.ini" 'polybar/isolation\.sh'
+assert_not_contains "no cpu percentage module (host load is meaningless here)" "$KH/.config/polybar/config.ini" 'internal/cpu'
+assert_not_contains "no memory percentage module" "$KH/.config/polybar/config.ini" 'internal/memory'
+assert_contains "the pill is padded to a fixed width (no reflow on switch)" "$KH/.config/polybar/active-env.sh" 'PAD_WIDTH='
+assert_contains_fixed "render() applies the fixed width" "$KH/.config/polybar/active-env.sh" 'printf "%-${PAD_WIDTH}s"'
+assert_contains "virt-viewer's windowed header is collapsed via gtk.css" "$KH/.config/gtk-3.0/gtk.css" 'headerbar'
 
 # The baked lookups must resolve per config.env: a whitelist env reports
 # whitelist egress, and <env>_VPN=1 marks that workspace as wanting a tunnel.
@@ -157,7 +162,7 @@ mkdir -p "$SANDBOX/run"
 printf 'OK\t1700000000\tall envs isolated\n' > "$SANDBOX/run/st"
 ISOLATION_STATUS_FILE="$SANDBOX/run/st" sh "$ISO" > "$SANDBOX/iso.out" 2> "$SANDBOX/iso.err"
 assert_eq "the isolation module exits 0 on OK" 0 "$?"
-assert_contains "OK renders green 'isolated'" "$SANDBOX/iso.out" '#22c55e.*isolated'
+assert_eq "OK renders NOTHING (quiet by design — no green pill)" "" "$(cat "$SANDBOX/iso.out")"
 assert_eq "OK stays silent on stderr" "" "$(cat "$SANDBOX/iso.err")"
 printf 'FAIL\t1700000001\tdevelopment escaped\n' > "$SANDBOX/run/st"
 ISOLATION_STATUS_FILE="$SANDBOX/run/st" sh "$ISO" > "$SANDBOX/iso.out" 2> "$SANDBOX/iso.err"

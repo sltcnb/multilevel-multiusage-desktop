@@ -16,6 +16,15 @@
 # Requires the guest to be running with qemu-guest-agent up (installed by
 # create.sh's cloud-init). If the agent isn't ready yet, wait for first boot to
 # finish and retry.
+#
+# IF THE AGENT NEVER COMES UP, STOP RETRYING THIS SCRIPT. The agent is installed
+# by cloud-init, so "no agent" usually means cloud-init did not provision the
+# guest at all — in which case there is also no account and no password, and
+# nothing here can help. Use the offline path instead, which reads the guest's
+# disk from the host and needs neither:
+#     virsh shutdown <env>
+#     environments/guest-doctor.sh <env>              # what actually went wrong
+#     environments/guest-doctor.sh --password <env>   # set the password anyway
 # =============================================================================
 set -eu
 

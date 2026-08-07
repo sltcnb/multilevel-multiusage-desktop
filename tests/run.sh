@@ -38,13 +38,20 @@ fi
 
 want="${1:-}"
 rc=0
+matched=0
 for f in "$HERE"/test-*.sh; do
   name="$(basename "$f" .sh)"; name="${name#test-}"
   [ -z "$want" ] || [ "$want" = "$name" ] || continue
+  matched=$((matched+1))
   echo
   echo "-------------------------------------------------------------------"
   sh "$f" || rc=1
 done
+# A selector that matches no file must not pass silently (a typo would look green).
+if [ -n "$want" ] && [ "$matched" -eq 0 ]; then
+  echo "[x] No test file matches '$want'." >&2
+  exit 1
+fi
 
 echo
 if [ "$rc" = 0 ]; then

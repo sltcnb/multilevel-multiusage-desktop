@@ -58,23 +58,18 @@ assert_eq "set_kv is an upsert, not an append" \
   "1" "$(grep -c '^TEST_KEY=' "$SANDBOX/config.env")"
 
 # --- secrets -----------------------------------------------------------------
-out="$(probe resolve_secret GUEST_PASSWORD 2>/dev/null)"
-assert_eq "resolve_secret returns the configured value verbatim" "testpw123" "$out"
+# require_secret: explicit values only — auto-generation was removed (a secret
+# the operator did not choose is one they cannot know).
+out="$(probe require_secret GUEST_PASSWORD 2>/dev/null)"
+assert_eq "require_secret returns the configured value verbatim" "testpw123" "$out"
 
 probe set_kv SOME_SECRET generate >/dev/null 2>&1
-gen="$(probe resolve_secret SOME_SECRET 2>/dev/null)"
-[ -n "$gen" ] && [ "$gen" != "generate" ] && _g "resolve_secret replaces \"generate\" with a random value" \
-  || _b "resolve_secret replaces \"generate\" with a random value"
-assert_contains_fixed "the generated value is persisted to config.env" \
-  "$SANDBOX/config.env" "SOME_SECRET=\"$gen\""
-# It must go to the root-only note file and NOT to the console: stderr lands on
-# the kiosk tty during the unattended first boot.
-err="$(probe resolve_secret ANOTHER_SECRET 2>&1 >/dev/null)"
-new="$(grep '^ANOTHER_SECRET=' "$SANDBOX/config.env" | cut -d'"' -f2)"
-case "$err" in
-  *"$new"*) _b "resolve_secret must not echo the generated secret to the console" ;;
-  *) _g "resolve_secret must not echo the generated secret to the console" ;;
-esac
+assert_fails "require_secret refuses the legacy \"generate\" literal" probe require_secret SOME_SECRET
+probe set_kv SOME_SECRET "" >/dev/null 2>&1
+assert_fails "require_secret refuses an empty secret" probe require_secret SOME_SECRET
+assert_fails "require_secret refuses an unset secret" probe require_secret ANOTHER_SECRET
+probe require_secret ANOTHER_SECRET 2>"$SANDBOX/err.out" >/dev/null || true
+assert_contains "the refusal names the missing key" "$SANDBOX/err.out" 'ANOTHER_SECRET'
 
 # scrub_secrets blanks every sensitive key but keeps the structure.
 probe scrub_secrets >/dev/null 2>&1

@@ -88,8 +88,8 @@ ALPINE_BRANCH="$1"; IMG_SIZE="$2"; OUT_IMG="$3"; AMVI_REF="$4"
 # Tools needed by alpine-make-vm-image + our packing. Preinstall ALL of the
 # tool's host deps so its internal `apk add --virtual` is satisfied and it does
 # not try to (re)fetch mid-run. syslinux = bootloader; util-linux = sfdisk/blkid.
-apk update
-apk add --no-cache \
+apk update -q
+apk add -q --no-cache \
   alpine-make-vm-image \
   qemu-img e2fsprogs e2fsprogs-extra dosfstools \
   syslinux util-linux blkid sfdisk rsync \
@@ -97,7 +97,7 @@ apk add --no-cache \
 
 # alpine-make-vm-image may not be packaged on all branches; fall back to git.
 if ! command -v alpine-make-vm-image >/dev/null 2>&1; then
-  apk add --no-cache git
+  apk add -q --no-cache git
   git clone --depth 1 --branch "$AMVI_REF" \
     https://github.com/alpinelinux/alpine-make-vm-image /amvi 2>/dev/null || \
   git clone --depth 1 https://github.com/alpinelinux/alpine-make-vm-image /amvi
@@ -130,7 +130,7 @@ apk update
 # whole build. So capture apk's status, then VERIFY the real binaries are present
 # and only fail if a genuine package is missing (not just a flaky font trigger).
 apk_rc=0
-apk add \
+apk add -q \
   linux-lts linux-firmware \
   wpa_supplicant wireless-tools iw \
   qemu-system-x86_64 qemu-img qemu-modules \
@@ -142,7 +142,6 @@ apk add \
   eudev udev-init-scripts keyd keyd-openrc usbguard usbguard-openrc usbutils \
   xinit i3wm xterm ttf-dejavu \
   polybar jq font-jetbrains-mono-nerd \
-  dialog \
   firefox-esr \
   xorriso \
   alpine-conf \
@@ -164,7 +163,6 @@ fi
   # grub-efi/efibootmgr/dosfstools: UEFI boot (most modern machines are UEFI-only;
   # a BIOS/MBR-only image is invisible to UEFI firmware and won't boot).
   # firefox-esr: host browser used ONLY for captive-portal (Entra) login (07).
-  # dialog: curses UI for src/host/tui.sh — the operator console ./setup-machine.sh launches.
   # linux-firmware = all WiFi/GPU blobs (baked so any NIC works out of the box).
   # Narrow to e.g. linux-firmware-iwlwifi to shrink the image if NIC is known.
   # NOT cloud-utils-localds (cdrkit) — conflicts with virt-install's xorriso
@@ -410,11 +408,14 @@ Boot it:
    deploy to bare metal.)
 
 Flash to USB / bare metal:
+  ./flash-image.sh            # interactive: convert + pick the stick + dd (recommended)
+  — or by hand:
   qemu-img convert -O raw $OUT_DIR/$OUT_IMG $OUT_DIR/appliance.raw
   sudo dd if=$OUT_DIR/appliance.raw of=/dev/rdiskN bs=4m   # <-- pick the right disk!
 
-First boot auto-runs the host base (nested virt, autologin, i3 kiosk). Then on
-the appliance, as ROOT on tty2 (Ctrl+Alt+F2 — there is deliberately no sudo on
-the host):
-  cd /opt/appliance && ./setup-machine.sh        # 3) create VMs   4) isolate + verify
+First boot auto-runs the whole host base (hardware detect, kiosk user,
+hardening, i3 switching, Wi-Fi + captive-portal hook). What is left for the
+operator, as ROOT on tty2 (Ctrl+Alt+F2 — there is deliberately no sudo on the
+host):
+  cd /opt/appliance && ./setup-machine.sh        # 1) create VMs   2) isolate + verify
 EOF

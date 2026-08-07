@@ -44,9 +44,9 @@ for g in libvirt libvirtd kvm video input; do addgroup "$KIOSK_USER" "$g" 2>/dev
 passwd -u "$KIOSK_USER" 2>/dev/null || true
 KIOSK_HOME="$(getent passwd "$KIOSK_USER" | cut -d: -f6)"; KIOSK_HOME="${KIOSK_HOME:-/home/$KIOSK_USER}"
 
-# Root password for admin on tty2 — from config (HOST_ROOT_PASSWORD). Empty or
-# "generate" => a strong one is generated + recorded in /root/generated-secrets.txt.
-ROOT_PW="$(resolve_secret HOST_ROOT_PASSWORD)"
+# Root password for admin on tty2 — from config (HOST_ROOT_PASSWORD). Must be
+# set explicitly; secrets are never auto-generated.
+ROOT_PW="$(require_secret HOST_ROOT_PASSWORD)"
 echo "root:$ROOT_PW" | chpasswd 2>/dev/null && log "Root password set (admin on tty2)." || warn "Failed to set root password."
 
 # Let libvirt-group members (the unprivileged kiosk user) use qemu:///system so
@@ -240,5 +240,5 @@ cat <<EOF
 installer already committed the system to the internal disk via
 src/installer/install-to-disk.sh — no manual setup-alpine step is needed.)
 
-Next (operator): cd /opt/appliance && ./setup-machine.sh    # Wi-Fi -> create -> isolate
+Next (operator): cd /opt/appliance && ./setup-machine.sh    # 1) create the VMs  2) isolate + verify
 EOF

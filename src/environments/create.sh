@@ -20,6 +20,10 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=../lib/common.sh
 . "$HERE/../lib/common.sh"
+# shellcheck source=../lib/de-install.sh
+. "$HERE/../lib/de-install.sh"
+# shellcheck source=../lib/guestdisk.sh
+. "$HERE/../lib/guestdisk.sh"
 require_root
 load_config
 require_cmds virt-install virsh qemu-img wget openssl sha256sum sha512sum gpg
@@ -177,12 +181,13 @@ img_gpg_fpr() {
 }
 
 # -----------------------------------------------------------------------------
-# Guest password: empty or "generate" -> auto-generate (recorded in
-# /root/generated-secrets.txt). Handed to cloud-init as plaintext (type: text)
-# so cloud-init hashes it internally — the most portable form across cloud-init
-# versions (a pre-hashed value was rejected by some builds; see make_seed).
+# Guest password: a value the operator chose in config.env (never auto-generated
+# — see require_secret). make_seed hands it to the guest twice: as a SHA512-crypt
+# hash in users[].passwd (the canonical cloud-init form) and via the chpasswd
+# binary in runcmd (covers root too). The chpasswd cloud-config key is NOT used:
+# its list/users dialects are mutually exclusive across cloud-init versions.
 # -----------------------------------------------------------------------------
-GUEST_PASSWORD="$(resolve_secret GUEST_PASSWORD)"
+GUEST_PASSWORD="$(require_secret GUEST_PASSWORD)"
 
 # -----------------------------------------------------------------------------
 # ensure_net NAME BRIDGE SUBNET  — define+start an ISOLATED NAT network.
@@ -207,11 +212,11 @@ ensure_net() {
   </ip>
 </network>
 EOF
-    virsh net-define "$tmpxml"
+    run virsh net-define "$tmpxml"
     rm -f "$tmpxml"
   fi
-  virsh net-start "$name" 2>/dev/null || true
-  virsh net-autostart "$name" 2>/dev/null || true
+  virsh net-start "$name" >/dev/null 2>&1 || true
+  virsh net-autostart "$name" >/dev/null 2>&1 || true
 }
 
 # Ensure an isolated network for every ENABLED environment (index -> subnet).
@@ -234,14 +239,59 @@ make_seed() {
   # the plaintext user-data is shredded once the ISO is built (below).
   chmod 700 "$seed_dir" 2>/dev/null || true
 
+  # Guest password, prepared for the TWO version-proof paths below:
+  #   _pw_hash — a SHA512-CRYPT hash ($6$...) for users[].passwd, THE canonical
+  #     cloud-init password form, accepted by every version on Ubuntu/Debian/
+  #     Arch. MUST come from `openssl passwd -6`: a bare sha512sum hex digest
+  #     is NOT a crypt hash — that is what cloud-init rejected back when we
+  #     "pre-hashed" with sha512sum, and it is why plaintext was ever involved.
+  #   _sh_pw — the plaintext, single-quote-escaped for the runcmd chpasswd
+  #     BINARY line (also the only thing that can set ROOT's password; the
+  #     chpasswd cloud-config key is deliberately NOT used: its `list` dialect
+  #     is removed in new cloud-init, its `users` dialect is unknown to old
+  #     ones, and specifying both is a hard error — "list and user commands
+  #     not supported". The binary has no such versioning problems.)
+  _pw_hash="$(openssl passwd -6 "$GUEST_PASSWORD")"
+  _sh_pw="${GUEST_PASSWORD//\'/\'\\\'\'}"
+
+  # ---- write_files accumulator ----------------------------------------------
+  # Files the guest needs are shipped as cloud-init write_files entries with
+  # base64 content, NOT as `printf '...\n...'` lines inside runcmd. The printf
+  # form nested a shell script inside a YAML scalar inside a shell heredoc:
+  # three escaping layers over one string, impossible to review, and it is where
+  # the desktop installer kept breaking. base64 has no escaping layer at all.
+  # write_files also runs in cloud-init's INIT stage, so the files are on disk
+  # before any runcmd needs them.
+  write_files_lines=""
+  # add_write_file PATH MODE CMD [ARGS...] — append one entry, content taken
+  # from CMD's stdout. Command substitution rather than a pipe on purpose: a
+  # function on the right of a pipe runs in a subshell and its assignment to
+  # write_files_lines would be discarded.
+  add_write_file() {
+    _wf_p="$1"; _wf_m="$2"; shift 2
+    _wf_b="$("$@" | base64 | tr -d '\n')"
+    write_files_lines="$write_files_lines
+  - path: $_wf_p
+    permissions: '$_wf_m'
+    encoding: b64
+    content: $_wf_b"
+  }
+
   # ---- Desktop environment (config <env>_DE) --------------------------------
   # Cloud-init installs the chosen DE + display manager + autologin so the env
   # boots into a usable desktop. Works for BOTH Ubuntu (apt) and Arch (pacman) —
   # cloud-init abstracts the package manager; package NAMES differ per distro.
-  # "none" keeps the env CLI-only. Both distros are systemd, so the DM enable +
-  # graphical target + lightdm autologin are identical.
+  # "none" keeps the env CLI-only. The actual installer comes from
+  # lib/de-install.sh so that environments/guest-doctor.sh can drop the very
+  # same script into a guest that cloud-init never provisioned.
   de_pkg_lines="  - qemu-guest-agent"
-  de_runcmd_lines="  - systemctl enable --now qemu-guest-agent || true"
+  # FIRST runcmd item: (re)set the guest + root passwords with the chpasswd
+  # BINARY. users[].passwd above already carries the hash; this line is the
+  # belt-and-braces (and the only root path) — it runs on every cloud-init
+  # version because it is just a shell command, not a cloud-config dialect.
+  de_runcmd_lines="  - |
+    printf '%s\\n' '$GUEST_USER:$_sh_pw' 'root:$_sh_pw' | chpasswd
+  - systemctl enable --now qemu-guest-agent || true"
   NEED_REBOOT=0
   _os="$(env_val "$vm" OS arch)"; _de="$(env_val "$vm" DE none)"
 
@@ -285,78 +335,40 @@ make_seed() {
     fi
     log "$vm: custom apt source (${APT_MIRROR:+mirror=$APT_MIRROR }${APT_PROXY:+proxy=$APT_PROXY})"
   fi
-  if [ "$_de" != "none" ]; then
-    case "$_os" in
-      ubuntu)
-        case "${_de}" in
-          xfce4) _pk="xubuntu-desktop-minimal lightdm"; _dm="lightdm"; _sess="xfce" ;;
-          gnome) _pk="ubuntu-desktop-minimal gdm3";      _dm="gdm3";    _sess="ubuntu" ;;
-          kde)   _pk="kde-plasma-desktop sddm";          _dm="sddm";    _sess="plasma" ;;
-          mate)  _pk="ubuntu-mate-desktop lightdm";      _dm="lightdm"; _sess="mate" ;;
-          lxqt)  _pk="lubuntu-desktop sddm";             _dm="sddm";    _sess="lxqt" ;;
-          *) warn "Unknown DE '$_de'; defaulting to xfce4."; _pk="xubuntu-desktop-minimal lightdm"; _dm="lightdm"; _sess="xfce" ;;
-        esac ;;
-      debian)   # Debian package names (apt)
-        case "${_de}" in
-          xfce4) _pk="xorg xfce4 xfce4-goodies lightdm";  _dm="lightdm"; _sess="xfce" ;;
-          gnome) _pk="gnome-core gdm3";                    _dm="gdm3";    _sess="gnome" ;;
-          kde)   _pk="kde-plasma-desktop sddm";            _dm="sddm";    _sess="plasma" ;;
-          mate)  _pk="mate-desktop-environment lightdm";   _dm="lightdm"; _sess="mate" ;;
-          lxqt)  _pk="lxqt sddm";                          _dm="sddm";    _sess="lxqt" ;;
-          *) warn "Unknown DE '$_de'; defaulting to xfce4."; _pk="xorg xfce4 lightdm"; _dm="lightdm"; _sess="xfce" ;;
-        esac ;;
-      *)        # arch (Arch package names + explicit xorg group)
-        case "${_de}" in
-          xfce4) _pk="xorg xfce4 xfce4-goodies lightdm lightdm-gtk-greeter"; _dm="lightdm"; _sess="xfce" ;;
-          gnome) _pk="gnome gdm";                                            _dm="gdm";     _sess="gnome" ;;
-          kde)   _pk="plasma-meta sddm";                                     _dm="sddm";    _sess="plasma" ;;
-          mate)  _pk="xorg mate mate-extra lightdm lightdm-gtk-greeter";     _dm="lightdm"; _sess="mate" ;;
-          lxqt)  _pk="xorg lxqt sddm";                                       _dm="sddm";    _sess="lxqt" ;;
-          *) warn "Unknown DE '$_de'; defaulting to xfce4."; _pk="xorg xfce4 lightdm lightdm-gtk-greeter"; _dm="lightdm"; _sess="xfce" ;;
-        esac ;;
-    esac
-    # Install the DE via a SELF-HEALING systemd oneshot, not a one-time runcmd.
-    # The DE download needs internet, which on first boot often ISN'T there yet
-    # (captive portal not cleared, Wi-Fi still associating) — and a runcmd only
-    # runs ONCE, so a first-boot failure left the VM desktop-less forever. This
-    # service retries on every boot (and every 30s) until the repos are reachable,
-    # logs to /var/log/de-install.log, then disables itself. So "no internet at
-    # first boot" self-heals the moment the portal is cleared.
-    if [ "$(os_family "$_os")" = "apt" ]; then
-      _inst="apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y $_pk"
-    else
-      _inst="pacman -Sy --noconfirm --needed $_pk"
-    fi
+  if de_resolve "$_os" "$_de"; then
+    # The installer and its retry unit are SHIPPED AS FILES (write_files, base64)
+    # and generated by lib/de-install.sh — the same text environments/
+    # guest-doctor.sh drops into a guest that cloud-init never touched.
+    add_write_file /usr/local/sbin/appliance-install-de.sh 0755 \
+      de_script "$_os" "$_de"
+    add_write_file /etc/systemd/system/appliance-de.service 0644 de_unit
+
+    # Run the installer DIRECTLY and synchronously here, then arm the unit for
+    # later boots. It used to be `systemctl start --wait appliance-de.service`,
+    # which is a trap: the unit carries Restart=on-failure, so on a guest whose
+    # uplink is not up yet systemd keeps restarting it and --wait never returns
+    # — cloud-final hangs for the entire boot, every boot. Calling the script is
+    # bounded: it installs, or it returns non-zero and the unit retries later.
     de_runcmd_lines="$de_runcmd_lines
-  - printf '#!/bin/sh\\nexec >>/var/log/de-install.log 2>&1\\n[ -f /var/lib/appliance-de.done ] && exit 0\\necho \"[de] attempt\"\\n$_inst || { echo \"[de] install failed (no repos/internet? portal not cleared?) - retrying next boot\"; exit 1; }\\nsystemctl set-default graphical.target || true\\nsystemctl enable $_dm || true\\nsystemctl start $_dm || true\\ntouch /var/lib/appliance-de.done\\nsystemctl disable appliance-de.service || true\\necho \"[de] OK\"\\n' > /usr/local/sbin/appliance-install-de.sh
-  - chmod +x /usr/local/sbin/appliance-install-de.sh
-  - printf '[Unit]\\nDescription=Appliance desktop install (retries until repos reachable)\\nAfter=network-online.target\\nWants=network-online.target\\n[Service]\\nType=oneshot\\nExecStart=/usr/local/sbin/appliance-install-de.sh\\nRestart=on-failure\\nRestartSec=30\\n[Install]\\nWantedBy=multi-user.target\\n' > /etc/systemd/system/appliance-de.service
+  - /usr/local/sbin/appliance-install-de.sh || true
   - systemctl daemon-reload || true
-  - systemctl enable --now appliance-de.service || true"
+  - systemctl enable appliance-de.service || true"
     NEED_REBOOT=1
-    # Autologin the guest into the DE so the env comes up desktop-ready. Per
-    # display manager: lightdm (Seat), gdm3/gdm (daemon AutomaticLogin — this is
-    # what the Ubuntu office/gnome env uses; previously ONLY lightdm was handled,
-    # so office sat at a gdm login prompt), sddm (Autologin).
-    case "$_dm" in
-      lightdm)
-        de_runcmd_lines="$de_runcmd_lines
-  - mkdir -p /etc/lightdm
-  - printf '[Seat:*]\\nautologin-user=$GUEST_USER\\nautologin-session=$_sess\\n' > /etc/lightdm/lightdm.conf" ;;
-      gdm3)
-        de_runcmd_lines="$de_runcmd_lines
-  - mkdir -p /etc/gdm3
-  - printf '[daemon]\\nAutomaticLoginEnable=true\\nAutomaticLogin=$GUEST_USER\\n' > /etc/gdm3/custom.conf" ;;
-      gdm)
-        de_runcmd_lines="$de_runcmd_lines
-  - mkdir -p /etc/gdm
-  - printf '[daemon]\\nAutomaticLoginEnable=true\\nAutomaticLogin=$GUEST_USER\\n' > /etc/gdm/custom.conf" ;;
-      sddm)
-        de_runcmd_lines="$de_runcmd_lines
-  - mkdir -p /etc/sddm.conf.d
-  - printf '[Autologin]\\nUser=$GUEST_USER\\nSession=$_sess\\n' > /etc/sddm.conf.d/autologin.conf" ;;
-    esac
-    log "$vm DE ($_os): $_de -> $_pk"
+
+    # Autologin drop-in for whichever display manager this DE uses.
+    _alp="$(de_autologin_path "$DE_DM")"
+    if [ -n "$_alp" ]; then
+      add_write_file "$_alp" 0644 de_autologin_content "$DE_DM" "$GUEST_USER" "$DE_SESSION"
+    fi
+    # Some display managers need more than a config file — Arch's lightdm will
+    # not autologin a user who is not in the `autologin` group, and that group
+    # does not exist until something creates it.
+    _alx="$(de_autologin_extra_cmd "$DE_DM" "$GUEST_USER")"
+    if [ -n "$_alx" ]; then
+      de_runcmd_lines="$de_runcmd_lines
+  - sh -c '$_alx'"
+    fi
+    log "$vm DE ($_os): $_de -> $DE_PKGS"
   fi
 
   # ---- Microsoft Intune enrollment prep (<env>_INTUNE=1, Ubuntu only) --------
@@ -415,10 +427,13 @@ make_seed() {
 
   # After a DE install, reboot once so the guest comes up in graphical.target
   # (gdm/lightdm is only ENABLED during cloud-init, not started that boot).
+  # Condition on the install marker: if the DE could NOT be installed yet (no
+  # internet at first boot), rebooting buys nothing — the enabled oneshot keeps
+  # retrying every 30s and starts the display manager itself once it succeeds.
   power_state_lines=""
   [ "${NEED_REBOOT:-0}" = "1" ] && power_state_lines="power_state:
   mode: reboot
-  condition: true
+  condition: test -f /var/lib/appliance-de.done
   timeout: 30"
 
   umask 077
@@ -434,16 +449,12 @@ users:
     sudo: ALL=(ALL) NOPASSWD:ALL
     lock_passwd: false
     shell: /bin/bash
+    passwd: '$_pw_hash'
 ssh_pwauth: true
-# Set the password as PLAINTEXT via chpasswd (cloud-init hashes it internally).
-# This is the most portable form — the users[].passwd hash field is handled
-# inconsistently across cloud-init versions (Ubuntu's rejected our SHA-512 hash
-# while Arch accepted it). type: text avoids all hash-format issues.
-chpasswd:
-  expire: false
-  list: |
-    $GUEST_USER:$GUEST_PASSWORD
-    root:$GUEST_PASSWORD
+# Files the guest needs, shipped base64 so no shell/YAML escaping layer can
+# mangle them, and written in cloud-init's INIT stage — on disk before any
+# runcmd below refers to them. Empty unless this env installs a desktop.
+${write_files_lines:+write_files:$write_files_lines}
 # Optional custom apt mirror/proxy (empty unless APT_MIRROR/APT_PROXY set).
 $apt_cfg_lines
 # Package install differs per distro but cloud-init abstracts it.
@@ -461,15 +472,15 @@ EOF
   # The volume label MUST be "cidata" for cloud-init NoCloud to pick it up.
   seed_iso="$IMAGES_DIR/${vm}-seed.iso"
   if command -v cloud-localds >/dev/null 2>&1; then
-    cloud-localds "$seed_iso" "$seed_dir/user-data" "$seed_dir/meta-data"
+    run cloud-localds "$seed_iso" "$seed_dir/user-data" "$seed_dir/meta-data"
   elif command -v mkisofs >/dev/null 2>&1; then
-    mkisofs -output "$seed_iso" -volid cidata -joliet -rock \
+    run mkisofs -output "$seed_iso" -volid cidata -joliet -rock \
       "$seed_dir/user-data" "$seed_dir/meta-data"
   elif command -v xorriso >/dev/null 2>&1; then
-    xorriso -as mkisofs -o "$seed_iso" -V cidata -J -r \
+    run xorriso -as mkisofs -o "$seed_iso" -V cidata -J -r \
       "$seed_dir/user-data" "$seed_dir/meta-data"
   elif command -v genisoimage >/dev/null 2>&1; then
-    genisoimage -output "$seed_iso" -volid cidata -joliet -rock \
+    run genisoimage -output "$seed_iso" -volid cidata -joliet -rock \
       "$seed_dir/user-data" "$seed_dir/meta-data"
   else
     die "No ISO builder found (cloud-localds/mkisofs/xorriso/genisoimage)."
@@ -630,6 +641,7 @@ fetch() {
 # -----------------------------------------------------------------------------
 create_vm() {
   name="$1"; variant="$2"; net="$3"; vcpu="$4"; ram="$5"; disk="$6"; base="$7"; host="$8"
+  step "Environment: $name  (os=$(env_val "$name" OS arch), ${vcpu} vCPU, ${ram} MB, ${disk} GB)"
 
   if virsh dominfo "$name" >/dev/null 2>&1; then
     # RECREATE lets you actually rebuild a VM to pick up cloud-init changes.
@@ -662,15 +674,12 @@ create_vm() {
   ENC_INJECT=0
   if [ "$(env_val "$name" ENCRYPT_DISK 0)" = "1" ]; then
     dpass="$(env_val "$name" DISK_PASS)"
-    if [ -z "$dpass" ] || [ "$dpass" = "generate" ]; then
-      dpass="$(gen_secret)"; set_kv "${name}_DISK_PASS" "$dpass"
-      umask 077; printf '%s_DISK_PASS=%s\n' "$name" "$dpass" >> /root/generated-secrets.txt 2>/dev/null || true
-      warn "$name: generated per-env disk passphrase -> /root/generated-secrets.txt"
-    fi
+    [ -n "$dpass" ] && [ "$dpass" != "generate" ] || \
+      die "$name: ${name}_DISK_PASS is empty — per-env disk encryption needs an explicit passphrase in config.env (secrets are never auto-generated)."
     log "Preparing ENCRYPTED disk for $name (LUKS, ${disk}G) ..."
     # Flatten base -> LUKS-encrypted qcow2 (no backing: luks+backing is unsupported).
     secpath="$IMAGES_DIR/.${name}.pass"; umask 077; printf '%s' "$dpass" > "$secpath"
-    qemu-img convert -O qcow2 -o "encrypt.format=luks,encrypt.key-secret=sec0" \
+    run qemu-img convert -O qcow2 -o "encrypt.format=luks,encrypt.key-secret=sec0" \
       --object "secret,id=sec0,file=$secpath" "$base" "$vmdisk"
     qemu-img resize --object "secret,id=sec0,file=$secpath" \
       "encrypt.key-secret=sec0" "$vmdisk" "${disk}G" 2>/dev/null || qemu-img resize "$vmdisk" "${disk}G" 2>/dev/null || true
@@ -694,8 +703,46 @@ SX
     ENC_INJECT=1
   else
     log "Preparing disk for $name (${disk}G) ..."
-    qemu-img create -f qcow2 -F qcow2 -b "$base" "$vmdisk"   # backing = base cloud img (thin)
-    qemu-img resize "$vmdisk" "${disk}G"
+    run qemu-img create -f qcow2 -F qcow2 -b "$base" "$vmdisk"   # backing = base cloud img (thin)
+    run qemu-img resize "$vmdisk" "${disk}G"
+    # ---- Pre-seed the login, BEFORE the guest has ever booted ---------------
+    # The password below is also handed to cloud-init (users[].passwd and a
+    # chpasswd in runcmd). This third path exists because the first two share a
+    # single point of failure: they only happen if cloud-init runs at all. When
+    # it does not — a datasource it declined to read, a seed it never saw — the
+    # operator gets a login prompt that no password opens, on all three
+    # environments at once, with no way in and no way to find out why. Writing
+    # the hash into the image now makes a working login independent of anything
+    # that happens at boot. cloud-init finding the account already there is
+    # harmless: it logs that useradd had nothing to do and applies the same
+    # password on top.
+    # Best-effort by design — an appliance without qemu-nbd still gets the two
+    # cloud-init paths, so this can warn and move on but must never abort a build.
+    if gd_supported; then
+      _hash="$(openssl passwd -6 "$GUEST_PASSWORD")"
+      # The trap is load-bearing: an interrupt between attach and detach leaves
+      # /dev/nbdN holding the qcow2 open, and virt-install then fails on a disk
+      # that looks perfectly fine on disk.
+      trap 'gd_detach' EXIT INT TERM
+      if gd_attach "$vmdisk" rw; then
+        gd_set_password "$GD_MNT" "$GUEST_USER" "$_hash" 1 \
+          && ok "$name: login pre-seeded for '$GUEST_USER' + root (works even if cloud-init does not run)." \
+          || warn "$name: could not pre-seed the login — relying on cloud-init alone."
+        # Seed DHCP networking too, for the same reason: cloud-init's network
+        # module has been seen to leave the NIC up-but-unconfigured (link-local
+        # only), which strands apt and the desktop install. This brings the
+        # interface up via systemd-networkd with no help from cloud-init.
+        gd_seed_network "$GD_MNT" "$(os_family "$(env_val "$name" OS arch)")" \
+          && ok "$name: DHCP networking seeded into the disk (comes up even if cloud-init's network stage does not)." \
+          || warn "$name: could not seed networking — relying on cloud-init."
+        gd_detach
+      else
+        warn "$name: could not open the new disk to pre-seed the login — relying on cloud-init alone."
+      fi
+      trap - EXIT INT TERM
+    else
+      warn "$name: qemu-nbd/nbd unavailable — login depends on cloud-init succeeding. If it does not, see src/environments/guest-doctor.sh."
+    fi
   fi
 
   seed_iso="$(make_seed "$name" "$host")"
@@ -705,13 +752,31 @@ SX
   # image consumes the NoCloud seed on first boot => unattended provisioning.
   # The org.qemu.guest_agent.0 channel lets the host talk to qemu-guest-agent in
   # the guest — needed for isolate.sh's in-guest verification.
-  # TODO(GPU-passthrough): replace --graphics spice/--video qxl with
-  #   --graphics none --hostdev <PCI-of-GPU>,address.type=pci  (VFIO)
-  # and bind the GPU to vfio-pci on the host. Only ONE VM can own the single
-  # physical GPU at a time on one monitor.
+  #
+  # --machine pc: pin the i440fx machine type, which boots on SeaBIOS. Without
+  # it, recent libvirt defaults these guests to q35 + UEFI (OVMF), and OVMF
+  # probes for Intel TDX on every boot — that is the "virt/tdx: TDX not supported
+  # by the host platform" banner operators saw, and the firmware phase is what
+  # made the boot feel very long. SeaBIOS has no such probe and comes up fast.
+  # It also presents the seed as a plain IDE CD-ROM (the canonical NoCloud
+  # layout), rather than an OVMF SATA CD-ROM, so cloud-init's datasource
+  # detection is on its most well-trodden path. The cloud images (Ubuntu/Arch/
+  # Debian) all boot on BIOS, so nothing is lost.
+  # TODO(GPU-passthrough): VFIO needs q35 (PCIe). To go that route, drop
+  #   --machine pc, switch to q35, and replace --graphics spice/--video qxl with
+  #   --graphics none --hostdev <PCI-of-GPU>,address.type=pci — then expect the
+  #   OVMF firmware back (and pin an edk2 build without the TDX probe if the slow
+  #   boot returns). Only ONE VM can own the single physical GPU at a time.
+  # --video qxl with 64 MB each of ram/vram/vgamem (the default is ~16 MB, which
+  # caps the guest around 1600p and forces the viewer to SCALE a too-small
+  # framebuffer — the pixelated, not-quite-fullscreen look). 64 MB covers 4K.
+  # Crisp, tile-filling output ALSO needs spice-vdagent inside the guest so
+  # virt-viewer's --auto-resize can set the guest resolution to the window size;
+  # lib/de-install.sh installs it with the desktop.
   set -- \
     --name "$name" \
     --os-variant "$variant" \
+    --machine pc \
     --memory "$ram" \
     --vcpus "$vcpu" \
     --cpu host-passthrough \
@@ -720,7 +785,7 @@ SX
     --disk path="$seed_iso",device=cdrom \
     --network network="$net",model=virtio \
     --graphics spice \
-    --video qxl \
+    --video model.type=qxl,model.ram=65536,model.vram=65536,model.vgamem=65536,model.heads=1 \
     --channel spicevmc \
     --channel unix,target.type=virtio,target.name=org.qemu.guest_agent.0 \
     --noautoconsole \
@@ -744,16 +809,17 @@ SX
         || die "$name: virsh define (encrypted) failed."
     virsh start "$name" || die "$name: virsh start (encrypted) failed — check the disk passphrase/secret."
   else
-    virt-install "$@"
+    run virt-install "$@"
   fi
 
-  virsh autostart "$name"
+  run virsh autostart "$name"
   ok "$name created + autostart enabled."
 }
 
 # -----------------------------------------------------------------------------
 # Download only the base image(s) actually needed by the enabled envs' OSes.
 # -----------------------------------------------------------------------------
+step "Base images (download + integrity check)"
 need_ubuntu=0; need_arch=0; need_debian=0
 for pair in $(for_each_enabled_env | awk '{print $1}'); do
   case "$(env_val "$pair" OS arch)" in ubuntu) need_ubuntu=1;; arch) need_arch=1;; debian) need_debian=1;; esac
@@ -792,5 +858,12 @@ first boot, then one automatic reboot into the DE). It's slow the first time by
 design; watch progress with:
     virsh console <name>     (Ctrl+] to exit)
     # in-guest: tail -f /var/log/de-install.log   (DE package install log)
-Next: ./src/environments/isolate.sh   (or ./setup-machine.sh 4)
+
+If a guest ends up with no desktop, or no password works at its login prompt,
+do NOT guess — shut it down and ask it directly (works with no password and no
+guest agent, because it reads the disk from here):
+    virsh shutdown <name>
+    ./src/environments/guest-doctor.sh <name>
+
+Next: ./src/environments/isolate.sh   (or ./setup-machine.sh 2)
 EOF

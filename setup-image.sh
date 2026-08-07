@@ -67,6 +67,32 @@ ask() {
   eval "$_a_var=\$_a_ans"
 }
 
+# ask_required VAR PROMPT — like ask, but a value is MANDATORY when the
+# variable has none: secrets are never auto-generated, so a password question
+# must be answered. If the variable already holds a value (an existing
+# config.env was loaded), blank keeps it and the prompt masks it. Three
+# strikes and out, so a piped blank stream fails instead of looping forever;
+# a closed stdin with no current value dies immediately.
+ask_required() {
+  _r_var="$1"; _r_prompt="$2"
+  eval "_r_cur=\"\${$_r_var:-}\""
+  _r_n=0
+  while :; do
+    if [ -n "$_r_cur" ]; then
+      printf '%s [********]: ' "$_r_prompt"
+      IFS= read -r _r_ans || _r_ans=""
+      [ -z "$_r_ans" ] && return 0
+    else
+      printf '%s (required): ' "$_r_prompt"
+      IFS= read -r _r_ans || die "$_r_prompt: a value is required (input closed)."
+    fi
+    _r_ans="$(clean_val "$_r_ans")"
+    [ -n "$_r_ans" ] && { eval "$_r_var=\$_r_ans"; return 0; }
+    _r_n=$((_r_n+1)); [ "$_r_n" -ge 3 ] && die "$_r_prompt: no value given after 3 attempts."
+    warn "A value is required — no default, no auto-generation."
+  done
+}
+
 # ask_yn VAR PROMPT DEFAULT(0|1) — yes/no question. Lenient by design: the
 # audience is non-expert, and with piped input a retry loop would silently
 # consume the NEXT answer. So an unparseable answer warns and keeps the default.
@@ -99,9 +125,9 @@ ask_choice() {
   eval "$_c_var=\$_c_ans"
 }
 
-# mask VALUE — never echo a real secret back in the summary screen; "generate"
-# and the empty string are safe to show as-is.
-mask() { case "$1" in ""|generate) printf '%s' "${1:-"(empty)"}" ;; *) printf '********' ;; esac; }
+# mask VALUE — never echo a real secret back in the summary screen; only the
+# empty string is safe to show as-is.
+mask() { case "$1" in "") printf '%s' "(empty)" ;; *) printf '********' ;; esac; }
 
 # --- Ctrl+C / kill handling -----------------------------------------------------
 # The write to config.env happens exactly once, at the very end, atomically —
@@ -197,11 +223,11 @@ seed_defaults() {
   : "${administration_EGRESS_MODE:=all}";  : "${administration_EGRESS_ALLOW:=}"
   : "${office_ENCRYPT_DISK:=0}"; : "${development_ENCRYPT_DISK:=0}"; : "${administration_ENCRYPT_DISK:=0}"
   : "${GUEST_USER:=operator}"
-  # Passwords default to "generate": a strong random value is created at
-  # provisioning and recorded in /root/generated-secrets.txt on the appliance —
-  # never echoed to any console, never shipped in the git tree.
-  : "${GUEST_PASSWORD:=generate}"
-  : "${HOST_ROOT_PASSWORD:=generate}"
+  # Passwords start EMPTY: secrets are never auto-generated, so the wizard must
+  # ask for them (ask_required). --defaults mode plants the well-known
+  # placeholder "changeme" below — fine for CI/tests only.
+  : "${GUEST_PASSWORD:=}"
+  : "${HOST_ROOT_PASSWORD:=}"
   : "${WIFI_SSID:=}"; : "${WIFI_PSK:=}"; : "${WIFI_COUNTRY:=FR}"
   : "${USBGUARD:=1}"; : "${YUBIKEY_ROUTER:=1}"; : "${TRUST_BAR:=1}"
   : "${ENCRYPT:=0}";  : "${LUKS_PASS:=}"
@@ -262,19 +288,18 @@ ask_credentials() {
   echo "  GUEST_USER is the login name inside every VM; GUEST_PASSWORD its password"
   echo "  (used for console/virt-viewer login)."
   ask GUEST_USER "Guest user name?" "$GUEST_USER"
-  echo "  Answer 'generate' to create a strong random password at provisioning;"
-  echo "  it is saved to /root/generated-secrets.txt on the appliance, never echoed."
-  ask GUEST_PASSWORD "Guest password (or 'generate')?" "$GUEST_PASSWORD"
+  echo "  GUEST_PASSWORD is the login password inside every VM (console/"
+  echo "  virt-viewer). Secrets are never auto-generated: what you type is it."
+  ask_required GUEST_PASSWORD "Guest password"
   echo "  HOST_ROOT_PASSWORD is the appliance's own root password (admin on tty2,"
   echo "  Ctrl+Alt+F2). The shipped image keeps root LOCKED; first boot sets this."
-  echo "  'generate' (the default) -> strong random, recorded in /root/generated-secrets.txt."
-  ask HOST_ROOT_PASSWORD "Host root password (or 'generate')?" "$HOST_ROOT_PASSWORD"
+  ask_required HOST_ROOT_PASSWORD "Host root password"
 }
 
 ask_network() {
   log "Step 3/6 — network (host Wi-Fi uplink)"
   echo "  Wi-Fi for the appliance's OWN internet uplink. Optional: leave the SSID"
-  echo "  empty and configure it later on the appliance (./setup.sh -> 1); a wired"
+  echo "  empty and configure it later on the appliance (src/host/wifi.sh); a wired"
   echo "  Ethernet connection needs nothing here."
   ask WIFI_SSID "Wi-Fi network name (SSID), empty = wired/skip?" "$WIFI_SSID"
   if [ -n "$WIFI_SSID" ]; then
@@ -301,7 +326,7 @@ ask_security() {
   echo "  a bad encrypted install can be unbootable."
   ask_yn ENCRYPT "Encrypt the appliance disk (EXPERIMENTAL)?" "$ENCRYPT"
   if [ "$ENCRYPT" = "1" ]; then
-    ask LUKS_PASS "LUKS passphrase (or 'generate')?" "${LUKS_PASS:-generate}"
+    ask_required LUKS_PASS "LUKS passphrase"
   fi
   echo "  Outbound (egress) policy per environment: 'all' = full internet via NAT;"
   echo "  'whitelist' = DNS plus ONLY the IP addresses you list."
@@ -464,8 +489,7 @@ administration_EGRESS_ALLOW="$administration_EGRESS_ALLOW"
 administration_ENCRYPT_DISK=$administration_ENCRYPT_DISK
 
 # --- credentials ---------------------------------------------------------------
-# "generate" = a strong random value is created at provisioning and recorded in
-# /root/generated-secrets.txt on the appliance.
+# All three are REQUIRED explicit values (secrets are never auto-generated).
 GUEST_USER="$GUEST_USER"
 GUEST_PASSWORD="$GUEST_PASSWORD"
 HOST_ROOT_PASSWORD="$HOST_ROOT_PASSWORD"
@@ -504,6 +528,18 @@ ALPINE_BRANCH="$ALPINE_BRANCH"
 BAKE_CONFIG=$BAKE_CONFIG
 EOF
     } > "$_tmp"
+    # Carry over every knob the wizard does NOT ask about, with its example
+    # default. Appliance scripts dereference config keys under `set -u`, so a
+    # key missing from this file crashes first boot (IMAGES_DIR did). Only
+    # uncommented KEY=... lines are candidates; keys written above always win,
+    # and commented-out example keys (the opt-in tri-states) stay out.
+    {
+      printf '\n# --- defaults carried from config.env.example (not asked by the wizard) --\n'
+      grep -E '^[A-Za-z_][A-Za-z_0-9]*=' "$HERE/config.env.example" | while IFS= read -r _line; do
+        _key="${_line%%=*}"
+        grep -q "^$_key=" "$_tmp" || printf '%s\n' "$_line"
+      done
+    } >> "$_tmp"
   )
   chmod 600 "$_tmp"
   mv "$_tmp" "$CONFIG_ENV"
@@ -514,16 +550,14 @@ next_steps() {
   cat <<EOF
 
 Next steps:
-  1. Build the image (needs Docker running):
-       ./src/build/make-image.sh
-  2. Flash it to a USB stick (pick the RIGHT disk!):
-       qemu-img convert -O raw out/appliance-alpine.qcow2 out/appliance.raw
-       sudo dd if=out/appliance.raw of=/dev/rdiskN bs=4m
-  3. Boot the target machine from the USB — it auto-installs to the internal
+  1. Build + flash in one go (needs Docker running):
+       ./flash-image.sh
+     (or separately: ./src/build/make-image.sh, then flash by hand)
+  2. Boot the target machine from the USB — it auto-installs to the internal
      disk and powers off. Remove the stick and boot again.
-  4. First boot: the appliance desktop (i3 kiosk + trust bar) starts
+  3. First boot: the appliance desktop (i3 kiosk + trust bar) starts
      automatically. Admin work happens as root on tty2 (Ctrl+Alt+F2):
-       cd /opt/appliance && ./setup.sh     # 3) create the VMs   4) isolate + verify
+       cd /opt/appliance && ./setup-machine.sh     # 1) create the VMs   2) isolate + verify
 EOF
 }
 
@@ -537,6 +571,9 @@ esac
 
 if [ "$DEFAULTS" = "1" ]; then
   seed_defaults
+  # CI/tests get a well-known placeholder password (secrets are never
+  # auto-generated; "changeme" is explicit, greppable and obviously not secret).
+  GUEST_PASSWORD="changeme"; HOST_ROOT_PASSWORD="changeme"
   maybe_backup 0
   write_config
   ok "Wrote $CONFIG_ENV from built-in defaults (0600)."

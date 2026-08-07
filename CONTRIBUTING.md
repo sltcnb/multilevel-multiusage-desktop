@@ -30,7 +30,7 @@ changes must not weaken environment isolation or the trusted computing base.
 Run ShellCheck locally — CI runs the same check and fails on warnings:
 
 ```sh
-shellcheck -x -S warning setup-image.sh setup-machine.sh src/lib/*.sh src/host/*.sh src/environments/*.sh src/installer/*.sh src/build/*.sh tests/*.sh
+shellcheck -x -S warning setup-image.sh setup-machine.sh flash-image.sh src/lib/*.sh src/host/*.sh src/environments/*.sh src/installer/*.sh src/build/*.sh tests/*.sh
 ```
 
 And the test suite (runs in a privileged Alpine Docker container):

@@ -21,7 +21,7 @@
 #
 # BOOTSTRAP ORDER (important): the portal must be cleared BEFORE creating the VMs
 #   — their cloud-init needs internet on first boot:
-#     operator: Super+p (portal login) -> ./setup-machine.sh 3 (create) -> ./setup-machine.sh 4 (isolate)
+#     operator: Super+p (portal login) -> ./setup-machine.sh 1 (create) -> ./setup-machine.sh 2 (isolate)
 # =============================================================================
 set -euo pipefail
 

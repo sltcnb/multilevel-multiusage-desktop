@@ -18,6 +18,22 @@ extract_userdata() {
 }
 yaml_ok() { python3 -c 'import sys,yaml; yaml.safe_load(open(sys.argv[1]))' "$1"; }
 
+# wf_extract <user-data> <in-guest path> <out file> — decode one write_files
+# entry. The desktop installer and its unit ship base64 inside write_files now
+# (no shell-in-YAML-in-heredoc escaping), so the tests assert on the FILE the
+# guest will actually receive rather than on a printf format string.
+wf_extract() {
+  python3 - "$1" "$2" "$3" <<'PY'
+import sys, yaml, base64
+d = yaml.safe_load(open(sys.argv[1])) or {}
+for wf in d.get('write_files', []):
+    if wf.get('path') == sys.argv[2]:
+        open(sys.argv[3], 'w').write(base64.b64decode(wf['content']).decode())
+        sys.exit(0)
+sys.exit(1)
+PY
+}
+
 new_sandbox
 "$SANDBOX/environments/create.sh" > "$SANDBOX/create.out" 2>&1
 create_rc=$?
@@ -49,17 +65,48 @@ assert_not_contains "the user is created group-free (a bad group aborts useradd)
 assert_contains "the admin group is added afterwards, best-effort" "$SANDBOX/office-ud.yaml" 'usermod -aG sudo,adm operator'
 assert_contains "arch guests get the wheel group" "$SANDBOX/dev-ud.yaml" 'usermod -aG wheel operator'
 assert_contains "arch guests also get the sudo package (the image ships none)" "$SANDBOX/dev-ud.yaml" '^  - sudo$'
-assert_contains "passwords are handed over as plaintext for cloud-init to hash" "$SANDBOX/office-ud.yaml" 'operator:testpw123'
+assert_contains_fixed "the user gets a SHA512-crypt password hash (canonical cloud-init form)" "$SANDBOX/office-ud.yaml" "passwd: '\$6\$"
+assert_not_contains "the chpasswd cloud-config key is NOT used (its dialects break across versions)" "$SANDBOX/office-ud.yaml" '^chpasswd:'
+assert_contains "the password is also set via the chpasswd BINARY (covers root too)" "$SANDBOX/office-ud.yaml" "operator:testpw123' 'root:testpw123' \\| chpasswd"
 
 # --- desktop environment per distro ------------------------------------------
-assert_contains "ubuntu+gnome installs the ubuntu desktop and gdm3" "$SANDBOX/office-ud.yaml" 'ubuntu-desktop-minimal gdm3'
+# The installer is a real file in write_files; decode it and assert on that.
+assert_ok "the office desktop installer is shipped as a write_files entry" \
+  wf_extract "$SANDBOX/office-ud.yaml" /usr/local/sbin/appliance-install-de.sh "$SANDBOX/office-de.sh"
+assert_ok "the arch desktop installer is shipped as a write_files entry" \
+  wf_extract "$SANDBOX/dev-ud.yaml" /usr/local/sbin/appliance-install-de.sh "$SANDBOX/dev-de.sh"
+assert_ok "the installer is a valid shell script" sh -n "$SANDBOX/office-de.sh"
+assert_ok "the arch installer is a valid shell script" sh -n "$SANDBOX/dev-de.sh"
+assert_contains "ubuntu+gnome installs the ubuntu desktop and gdm3" "$SANDBOX/office-de.sh" 'ubuntu-desktop-minimal gdm3'
 assert_contains "gdm3 gets an autologin drop-in" "$SANDBOX/office-ud.yaml" '/etc/gdm3/custom.conf'
-assert_contains "arch+xfce4 installs via pacman" "$SANDBOX/dev-ud.yaml" 'pacman -Sy --noconfirm --needed xorg xfce4'
-assert_contains "lightdm gets an autologin seat" "$SANDBOX/dev-ud.yaml" 'autologin-user=operator'
+assert_contains "arch+xfce4 installs via pacman" "$SANDBOX/dev-de.sh" 'pacman -Sy --noconfirm --needed xorg xfce4'
+assert_ok "lightdm gets an autologin drop-in" \
+  wf_extract "$SANDBOX/dev-ud.yaml" /etc/lightdm/lightdm.conf.d/50-appliance-autologin.conf "$SANDBOX/dev-al.conf"
+assert_contains "lightdm autologs in the guest user" "$SANDBOX/dev-al.conf" 'autologin-user=operator'
+assert_contains "lightdm autologin also needs the 'autologin' group (arch enforces it)" \
+  "$SANDBOX/dev-ud.yaml" 'gpasswd -a operator autologin'
 assert_contains "the DE install is a retrying service, not a one-shot runcmd" "$SANDBOX/office-ud.yaml" 'appliance-de.service'
+assert_contains "cloud-init runs the installer directly (bounded)" "$SANDBOX/office-ud.yaml" '/usr/local/sbin/appliance-install-de.sh \|\| true'
+# Regression: `systemctl start --wait` on a Restart=on-failure oneshot never
+# returns while the install keeps failing, hanging cloud-final on every boot.
+assert_not_contains "cloud-init never blocks on the retry unit (that hangs cloud-final)" \
+  "$SANDBOX/office-ud.yaml" 'systemctl start --wait'
+assert_contains "a previously interrupted dpkg is repaired before installing" "$SANDBOX/office-de.sh" 'dpkg --configure -a'
+assert_contains "concurrent install attempts are serialised" "$SANDBOX/office-de.sh" 'appliance-de.lock'
+assert_contains "a too-small guest disk is reported as such, not as an apt error" "$SANDBOX/office-de.sh" 'not enough disk'
+assert_contains "a too-small guest disk stops retrying (a retry cannot make space)" "$SANDBOX/office-de.sh" 'appliance-de.nospace'
+# Regression: starting the DM synchronously from inside cloud-init can deadlock
+# against the transaction still bringing up multi-user.target.
+assert_not_contains "the display manager is not started synchronously under cloud-init" \
+  "$SANDBOX/office-de.sh" '^systemctl start lightdm$'
+assert_ok "the retry unit is shipped as a write_files entry" \
+  wf_extract "$SANDBOX/office-ud.yaml" /etc/systemd/system/appliance-de.service "$SANDBOX/office-de.service"
+assert_contains "the retry unit skips itself once the install is done" "$SANDBOX/office-de.service" 'ConditionPathExists=!/var/lib/appliance-de.done'
 assert_contains "the DE install reboots once into graphical.target" "$SANDBOX/office-ud.yaml" 'mode: reboot'
+assert_contains "the reboot only happens if the install completed" "$SANDBOX/office-ud.yaml" 'condition: test -f /var/lib/appliance-de.done'
 assert_not_contains "a DE=none env installs no desktop" "$SANDBOX/adm-ud.yaml" 'appliance-de.service'
 assert_not_contains "a DE=none env does not reboot" "$SANDBOX/adm-ud.yaml" 'mode: reboot'
+assert_not_contains "a DE=none env ships no write_files at all" "$SANDBOX/adm-ud.yaml" '^write_files:'
 
 # --- the plaintext staging copy is gone --------------------------------------
 if [ -f "$SANDBOX/cache/seed-office/user-data" ]; then

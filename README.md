@@ -83,8 +83,9 @@ The contract is deliberately pessimistic. The file lives on a tmpfs, so it is
 gone after a reboot: the answer is UNKNOWN until the first check of the new
 boot, never a stale OK inherited from the previous one. A missing or unparsable
 file also means UNKNOWN, and readers must never crash on it. Anything that wants
-to show "is it still isolated?" reads this file — the trust bar and the operator
-TUI's status dashboard both surface the verdict from it. Running it by hand
+to show "is it still isolated?" reads this file — the trust bar lights up when
+the verdict is FAIL or UNKNOWN (it stays quiet while everything is OK). Running
+it by hand
 (`src/host/isolation-watch.sh --once`) exits 0/1/2 for OK/FAIL/UNKNOWN.
 
 The watch is installed automatically by `src/environments/isolate.sh`.
@@ -114,8 +115,8 @@ Two properties matter more than the list:
   Unprivileged events (portal login, the USB chooser) go through a mode-1733
   spool directory and are folded into the real log by the next root-run event.
 
-Read it as root with `tail -f /var/log/appliance-audit.log`, from the operator
-TUI's audit view, or with `audit_tail` from `src/lib/common.sh`.
+Read it as root with `tail -f /var/log/appliance-audit.log`, or with
+`audit_tail` from `src/lib/common.sh`.
 
 ## Getting it onto a machine
 
@@ -153,9 +154,21 @@ re-detected on the real machine at first boot). Because `config.env` holds secre
 Skip baking with `BAKE_CONFIG=0 ./src/build/make-image.sh` (the appliance then starts
 from `config.env.example` and you edit it on tty2). The shipped image keeps root
 **locked**; the installed system sets root at first boot from `HOST_ROOT_PASSWORD`
-(default `generate` → a strong random one recorded in `/root/generated-secrets.txt`).
+(required — secrets are never auto-generated).
 
 ### 2. Flash a USB stick
+
+```sh
+./flash-image.sh
+```
+
+`flash-image.sh` does the whole second half in one go: it reuses the qcow2 you
+just built (or rebuilds it with `--build`), converts it to raw, lists the
+external/removable disks, and flashes the one you pick — after you confirm the
+target by typing its device name a second time. The system disk is refused
+outright, and `--image-only` stops before the flash step.
+
+The manual equivalent (what the script runs under the hood):
 
 ```sh
 qemu-img convert -O raw out/appliance-alpine.qcow2 out/appliance.raw
@@ -208,18 +221,15 @@ password immediately with `passwd`).
 
 ```sh
 cd /opt/appliance
-./setup-machine.sh           # the operator console: status dashboard + guided setup
+./setup-machine.sh           # the numbered menu of the remaining steps
 ```
 
-With no arguments, `setup-machine.sh` opens the appliance TUI — a full-screen console
-(`dialog` when present, a plain numbered menu otherwise) with a status dashboard
-(isolation verdict, VM states, uplink, recent audit events), a guided first
-setup (Wi-Fi → captive portal → create the VMs → isolate + verify), and
-operations (guest passwords, VPN, scrubbing secrets, secure boot, USB allow,
-checking/applying/rolling back updates, viewing the audit log). This is the easy
-path — you don't have to remember which script to run. `./setup-machine.sh --menu`
-keeps the old numbered step menu, and `./setup-machine.sh <n>` runs step n directly;
-each step below is also runnable as its own script.
+The host base — hardware detection, kiosk user, hardening, i3 switching, Wi-Fi
+and the captive-portal hook — already ran automatically at first boot, so
+`setup-machine.sh` only offers what is left: **1) create the VMs** and **2)
+isolate + verify**, plus the day-two operations (guest passwords, VPN, scrubbing
+secrets, secure boot). `./setup-machine.sh <n>` runs step n directly; each step
+is also runnable as its own script.
 
 If you're on Wi-Fi, set `WIFI_SSID` / `WIFI_PSK` / `WIFI_COUNTRY` and run
 `./src/host/wifi.sh` (the passphrase is hashed, never stored in the clear). On wired
@@ -325,10 +335,12 @@ headroom reserved first.
 
 ### Secrets
 
-Any of these can be set to `"generate"` (or left empty) and the scripts will
-create a strong random value, use it, and record it in
-`/root/generated-secrets.txt`: `HOST_ROOT_PASSWORD`, `GUEST_PASSWORD`,
-`LUKS_PASS`, and each `<env>_DISK_PASS`. Once everything is set up,
+Every secret must be an explicit value you chose, written in `config.env` (by
+`setup-image.sh` or by hand): `HOST_ROOT_PASSWORD`, `GUEST_PASSWORD`,
+`LUKS_PASS`, and each `<env>_DISK_PASS`. Secrets are **never auto-generated** —
+a password you did not choose is a password you cannot know, and a generated
+root or LUKS password locks you out of your own machine. An empty secret is a
+hard error at provisioning, not a random value. Once everything is set up,
 `src/environments/scrub-secrets.sh` blanks them back out of `config.env`.
 
 Don't bake secrets into a shipped image — set them on the appliance instead.
@@ -359,9 +371,12 @@ Don't bake secrets into a shipped image — set them on the appliance instead.
 
 ```
 setup-image.sh            interactive build-machine wizard: writes config.env, runs the build
+flash-image.sh            build + convert + flash the image to a USB stick (safe disk picker)
 config.env.example        template for config.env (secrets live only in config.env, git-ignored)
-setup-machine.sh          on the appliance: the operator TUI (status dashboard, guided setup, operations)
+setup-machine.sh          on the appliance: menu of the remaining steps (create VMs, isolate, day-two ops)
 src/lib/common.sh             shared helpers: logging, guards, config, the environment model, the audit log
+src/lib/guestdisk.sh          mount a shut-off guest's disk from the host (qemu-nbd); offline password/account repair
+src/lib/de-install.sh         one definition of the guest desktop installer, shared by create.sh and guest-doctor.sh
 src/build/make-image.sh       build the bootable Alpine image (runs in Docker)
 src/installer/install-to-disk.sh  clone the image onto the internal disk, optional LUKS
 src/host/
@@ -375,7 +390,6 @@ src/host/
   usb-to-vm.sh            route a YubiKey/USB device to a chosen VM (Super+y / auto on plug)
   isolation-watch.sh      recurring check that the isolation rules are still live + status file
   update.sh               signed in-place update of the appliance tree (--check/--rollback)
-  tui.sh                  the operator console behind setup-machine.sh (dashboard, guided setup, operations)
   secure-boot.sh          optional Secure Boot + TPM PCR binding (experimental)
   tpm-initramfs-hook.sh   optional hands-free TPM unlock of the encrypted root
 src/environments/
@@ -383,6 +397,7 @@ src/environments/
   isolate.sh              per-VM networks + all-pairs firewall drop + verification
   vpn.sh                  optional per-VM non-bypassable WireGuard tunnel
   set-guest-password.sh   change a running guest's password via the guest agent
+  guest-doctor.sh         inspect/repair a shut-off guest from the host — no password, no guest agent
   scrub-secrets.sh        wipe secrets from config.env after setup
 ```
 
@@ -398,6 +413,45 @@ provisions the guest unattended on first boot. Every guest OS goes through the
 exact same path, which keeps provisioning uniform and reliable. (Arch has no
 official unattended installer otherwise; scripting `pacstrap` from the ISO is
 possible but brittle, so the cloud image is the better choice there too.)
+
+The guest's login does **not** depend on that going well. `create.sh` writes the
+password hash into the new disk before the VM has ever booted, in addition to
+handing it to cloud-init. This is deliberate redundancy: everything else the
+seed carries — the account, the desktop, the guest agent — only happens if
+cloud-init runs, so a datasource it declines to read used to lock the operator
+out of all three environments at once, with no way in and no way to find out
+why.
+
+## When a guest goes wrong
+
+`src/environments/guest-doctor.sh` is the tool for "I can't log in" and "there's
+no desktop". It goes in through the **host**: `qemu-nbd` attaches the guest's
+qcow2 and the guest's filesystem becomes ordinary files. It therefore needs no
+password, no SSH and no qemu-guest-agent — which matters, because the agent is
+itself installed by cloud-init, so the failure that hurts most also takes out
+every other repair path. `set-guest-password.sh` remains the quick route for a
+*healthy, running* guest; this is the one for a broken one.
+
+The VM must be shut off (`virsh shutdown <env>`) — mounting a disk a live qemu
+also has open corrupts it, so every mode refuses to run against a running
+domain.
+
+```sh
+./src/environments/guest-doctor.sh                 # report on every environment
+./src/environments/guest-doctor.sh --password office    # reset the login, offline
+./src/environments/guest-doctor.sh --install-de office  # arm the desktop install
+```
+
+The report answers the questions you cannot answer from a console login prompt:
+
+| Line | What it means |
+|------|---------------|
+| `cloud-init seed: NOT ATTACHED` | the guest never had a seed to read — nothing in it applied |
+| `cloud-init ran as: NEVER RAN` | cloud-init never started; the account and desktop were never created |
+| `datasource: none recorded` | cloud-init ran but did not consume our seed |
+| `user 'operator': LOCKED` | the account exists with no usable password — indistinguishable from "wrong password" at a console |
+| `desktop install: ABORTED — guest disk too small` | apt ran out of room; raise `<env>_DISK_GB` and `RECREATE=<env>` |
+| `desktop install: never armed` | the installer never reached the image (cloud-init did not run) |
 
 ## Per-environment VPN
 
@@ -440,8 +494,7 @@ configuration. Two channels: a tarball at `UPDATE_URL` with a detached
 `UPDATE_URL.sig`, or `UPDATE_CHANNEL=git` moving to a signed tag/commit from
 `UPDATE_GIT_REMOTE` / `UPDATE_GIT_REF`. `UPDATE_KEEP_BACKUPS` (default 3)
 previous trees are kept for rollback, `UPDATE_REQUIRE_VMS_OFF=1` refuses to run
-while any VM is up, and every check/apply/rollback lands in the audit log. The
-operator TUI runs the same commands from its update screen.
+while any VM is up, and every check/apply/rollback lands in the audit log.
 
 ## Alignment with ANSSI-PA-114
 
@@ -461,7 +514,7 @@ but you enable it (sometimes with a firmware/hardware setting).
 | No secrets left at rest | Built-in | `src/environments/scrub-secrets.sh` blanks passwords/keys after setup |
 | Traceability of security events | Built-in | append-only audit log (`/var/log/appliance-audit.log`): isolation transitions, portal logins, USB routing, updates |
 | Memory encryption (anti cold-boot) | Opt-in | `mem_encrypt=on` set; full DRAM encryption needs TSME enabled in firmware |
-| Disk encryption | Opt-in | LUKS2 via `ENCRYPT=1`; key auto-generated if none supplied |
+| Disk encryption | Opt-in | LUKS2 via `ENCRYPT=1`; explicit `LUKS_PASS` required |
 | Per-environment user-keyed encryption | Opt-in | per-VM LUKS via `<env>_ENCRYPT_DISK=1` + `<env>_DISK_PASS` |
 | Dedicated non-bypassable VPN per environment | Opt-in | host-enforced WireGuard via `<env>_VPN=1` + `src/environments/vpn.sh` |
 | Secure/measured boot + TPM | Opt-in | `src/host/secure-boot.sh` (Secure Boot + TPM PCR bind) + `src/host/tpm-initramfs-hook.sh` |
@@ -481,7 +534,7 @@ every push and pull request; ShellCheck fails on warnings and above. Run both
 locally before opening a PR:
 
 ```sh
-shellcheck -x -S warning setup-image.sh setup-machine.sh src/lib/*.sh src/host/*.sh src/environments/*.sh src/installer/*.sh src/build/*.sh tests/*.sh
+shellcheck -x -S warning setup-image.sh setup-machine.sh flash-image.sh src/lib/*.sh src/host/*.sh src/environments/*.sh src/installer/*.sh src/build/*.sh tests/*.sh
 ./tests/run.sh
 ```
 
@@ -517,7 +570,7 @@ IN_CONTAINER=1 ./tests/run.sh    # already on a suitable Linux host, as root
 | `tests/test-audit.sh`   | the audit log: append-only, rotation, the unprivileged spool, never aborting its caller |
 | `tests/test-watch.sh`   | the isolation watch: status-file contract, transitions, the recurring timer |
 | `tests/test-setup-image.sh` | the build-machine wizard: defaults mode, piped answers, config.env backup/atomicity, interrupt safety |
-| `tests/test-tui.sh`     | the operator console: menu dispatch, dashboard resilience, the setup-machine.sh entry points |
+| `tests/test-flash-image.sh` | the flash entry point: image reuse, conversion, and the disk-safety refusals (system disk, unknown disk, bad confirmation) |
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for style and review expectations.
 

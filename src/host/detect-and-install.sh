@@ -247,5 +247,5 @@ cat <<EOF
 The rest of the host base (configure, harden, switching, Wi-Fi) is applied
 AUTOMATICALLY at first boot. When the desktop is up, build the VMs from a root
 shell on tty2 (Ctrl+Alt+F2):
-    cd /opt/appliance && ./setup-machine.sh        # numbered menu: Wi-Fi -> create -> isolate
+    cd /opt/appliance && ./setup-machine.sh        # numbered menu: 1) create  2) isolate
 EOF
