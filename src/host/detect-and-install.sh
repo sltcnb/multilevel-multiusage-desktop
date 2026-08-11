@@ -4,7 +4,7 @@
 # -----------------------------------------------------------------------------
 # Detect hardware, seed config.env, and produce a minimal Alpine KVM host that
 # contains: kernel + KVM modules, qemu-kvm, libvirt, virt-viewer, minimal Xorg,
-# and i3. Enables nested virtualization.
+# and i3. Nested virtualization is DISABLED (T-14): desktop guests never need it.
 #
 # Two build modes:
 #   * ISO / running-Alpine mode (default, most reliable): run this ON a booted
@@ -57,12 +57,14 @@ set_kv PKG "$PKG"
 if grep -qi 'GenuineIntel' /proc/cpuinfo; then
   CPU_VENDOR="intel"
   KVM_MODULE="kvm_intel"
-  # Intel nested virt param.
-  NESTED_PARAM="options kvm_intel nested=1"
+  # Nested virt DISABLED (T-14 / SO-1, SO-3): the guests are desktop VMs and have
+  # no need to run their own hypervisors; leaving nested on only widens the
+  # emulated surface a compromised guest can attack to break out to the host.
+  NESTED_PARAM="options kvm_intel nested=0"
 elif grep -qi 'AuthenticAMD' /proc/cpuinfo; then
   CPU_VENDOR="amd"
   KVM_MODULE="kvm_amd"
-  NESTED_PARAM="options kvm_amd nested=1"
+  NESTED_PARAM="options kvm_amd nested=0"
 else
   die "Unknown CPU vendor; cannot select KVM module."
 fi
@@ -193,10 +195,10 @@ else
 fi
 
 # -----------------------------------------------------------------------------
-# 7. Enable nested virtualization + load correct module.
+# 7. Set the KVM nested-virt parameter (now OFF, see above) + load the module.
 #    Written as a modprobe.d drop-in so it survives reboots.
 # -----------------------------------------------------------------------------
-log "Enabling nested virt for $KVM_MODULE ..."
+log "Configuring $KVM_MODULE (nested virt disabled) ..."
 echo "$NESTED_PARAM" > /etc/modprobe.d/kvm-nested.conf
 # Autoload module at boot.
 if [ -d /etc/modules-load.d ]; then
@@ -210,14 +212,14 @@ if [ -d /etc/modules-load.d ]; then
 fi
 for m in usbhid hid_generic; do modprobe "$m" 2>/dev/null || true; done
 
-# Load now (reload to pick up nested=1 if already loaded without it).
+# Load now (reload to pick up nested=0 if already loaded with it on).
 modprobe -r "$KVM_MODULE" 2>/dev/null || true
 modprobe "$KVM_MODULE"
-# Verify nested actually turned on (both vendors report Y/1 when enabled).
+# Verify nested is actually OFF (both vendors report N/0 when disabled).
 nested_state="$(cat "/sys/module/${KVM_MODULE}/parameters/nested" 2>/dev/null || echo '?')"
 case "$nested_state" in
-  Y|1) ok "Nested virt ENABLED (nested=$nested_state).";;
-  *)   warn "Nested virt not confirmed (nested=$nested_state). May need reboot.";;
+  N|0) ok "Nested virt DISABLED (nested=$nested_state).";;
+  *)   warn "Nested virt still on (nested=$nested_state) — a guest was likely already using $KVM_MODULE. Reboot to apply nested=0.";;
 esac
 
 # -----------------------------------------------------------------------------

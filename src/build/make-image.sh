@@ -62,12 +62,15 @@ echo "[*] Packing appliance tree ..."
 # /opt/appliance with the same structure the scripts expect.
 BAKE_FILES="config.env.example README.md setup-machine.sh src"
 # Optionally bake the LOCAL config.env so the appliance boots with your Wi-Fi /
-# per-env / password settings already in place (no editing on the box). Skip with
-# BAKE_CONFIG=0. WARNING: config.env holds SECRETS (Wi-Fi PSK, passwords) — the
-# resulting image is sensitive, do NOT distribute it. Hardware-detected values in
-# it are re-detected on the real machine at first boot, so a stale local copy is
-# fine.
-if [ -f config.env ] && [ "${BAKE_CONFIG:-1}" != "0" ]; then
+# per-env / password settings already in place (no editing on the box). This is
+# OFF BY DEFAULT (T-16 / SO-11): config.env holds SECRETS (Wi-Fi PSK, guest+root
+# passwords, LUKS/VPN keys), and baking them makes the operational secret common
+# to every image built from this checkout — an image that leaks then compromises
+# the whole fleet. Left off, the installed machine reads its config at first boot
+# (install-to-disk seeds sane defaults in its absence) and the operator sets
+# secrets on the box. Set BAKE_CONFIG=1 to opt back in for a single, sensitive,
+# NON-distributed image. Hardware-detected values are re-detected at first boot.
+if [ -f config.env ] && [ "${BAKE_CONFIG:-0}" = "1" ]; then
   echo "[!] Baking local config.env into the image — it contains SECRETS. Treat the image as sensitive (BAKE_CONFIG=0 to skip)."
   BAKE_FILES="config.env $BAKE_FILES"
 fi
