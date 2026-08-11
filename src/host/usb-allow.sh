@@ -18,8 +18,19 @@
 # =============================================================================
 set -eu
 
+HERE="$(cd "$(dirname "$0")" && pwd)"
+# Source the shared library for audit_event. Fall back gracefully if the tree is
+# laid out differently (older/flat appliances) so listing still works.
+if [ -f "$HERE/../lib/common.sh" ]; then . "$HERE/../lib/common.sh"
+elif [ -f "$HERE/lib/common.sh" ]; then . "$HERE/lib/common.sh"
+else audit_event() { :; }; fi
+
 command -v usbguard >/dev/null 2>&1 || { echo "[x] usbguard not installed."; exit 1; }
 [ "$(id -u)" = 0 ] || { echo "[x] run as root."; exit 1; }
+
+# Who is granting the derogation (T-13 wants USB exceptions logged DATED and BY
+# NAME). SUDO_USER is the human behind a sudo; else the login name; else uid.
+_actor="${SUDO_USER:-$(logname 2>/dev/null || id -un 2>/dev/null || id -u)}"
 
 cmd="${1:-list}"
 case "$cmd" in
@@ -33,13 +44,19 @@ case "$cmd" in
     [ $# -ge 2 ] || { echo "usage: usb-allow.sh allow <id>"; exit 1; }
     # -p persists the allow rule to rules.conf.
     usbguard allow-device "$2" -p
-    echo "[+] Allowed + persisted device $2. Now attach it to ONE VM only:"
+    # Record the derogation: timestamped (audit_event stamps UTC) and named, so a
+    # USB exception is never anonymous or undated (T-13). Capture the device's
+    # descriptor line too, so the log says WHAT was allowed, not just its id.
+    _dev="$(usbguard list-devices 2>/dev/null | awk -v i="$2" '$1==i":"||$1==i {sub(/^[0-9]+: */,""); print; exit}')"
+    audit_event usb-derogation action=allow id="$2" by="$_actor" device="${_dev:-unknown}"
+    echo "[+] Allowed + persisted device $2 (logged: by $_actor). Now attach it to ONE VM only:"
     echo "    virsh attach-device <env> <device.xml>"
     ;;
   block)
     [ $# -ge 2 ] || { echo "usage: usb-allow.sh block <id>"; exit 1; }
     usbguard block-device "$2" -p
-    echo "[+] Blocked + persisted device $2."
+    audit_event usb-derogation action=block id="$2" by="$_actor"
+    echo "[+] Blocked + persisted device $2 (logged: by $_actor)."
     ;;
   *)
     echo "usage: usb-allow.sh [list|allow <id>|block <id>]"; exit 1 ;;

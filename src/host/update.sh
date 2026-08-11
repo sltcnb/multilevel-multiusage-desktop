@@ -242,6 +242,15 @@ fetch_url() {
 # stage_tarball DEST — download, verify, unpack into DEST.
 stage_tarball() {
   [ -n "${UPDATE_URL:-}" ] || die "UPDATE_CHANNEL=tarball but UPDATE_URL is empty."
+  # Transport MUST be encrypted (T-15 / SO-10). The detached signature already
+  # guarantees integrity + authenticity, but plaintext HTTP leaks which release a
+  # machine runs (a fingerprinting/targeting aid) and lets an on-path attacker
+  # strip the .sig fetch or feed a downgrade. Refuse anything but https.
+  case "$UPDATE_URL" in
+    https://*) : ;;
+    *) audit update result=refused reason=insecure-transport
+       die "UPDATE_URL must be https:// — the update transport must be encrypted (T-15). Got: $UPDATE_URL" ;;
+  esac
   require_cmds tar
   _tar="$STAGE/update.tar"
   log "Downloading $UPDATE_URL ..."

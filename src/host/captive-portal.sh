@@ -105,6 +105,16 @@ fi
 
 # Find the URL the portal redirects us to (the Entra login entry point).
 portal_url="$(curl -s -o /dev/null -w '%{redirect_url}' -m 5 "$PROBE" || true)"
+# The redirect target is chosen by WHOEVER runs the network — treat it as hostile
+# input. Only ever hand the browser an http/https URL: reject file:, data:,
+# javascript:, or anything with shell/space metacharacters, so a malicious portal
+# cannot turn this launch into local-file access or argument injection into the
+# kiosk browser (T-04 / SO-2). A rejected target falls back to the neverssl probe.
+case "$portal_url" in
+  http://*|https://*)
+    case "$portal_url" in *[!A-Za-z0-9._~:/?#@!\$\&\'\(\)\*\+,\;=%-]*) portal_url="" ;; esac ;;
+  *) portal_url="" ;;
+esac
 if [ -n "$portal_url" ]; then
   result=opened
 else
