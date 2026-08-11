@@ -600,15 +600,14 @@ IN_CONTAINER=1 ./tests/run.sh    # already on a suitable Linux host, as root
 | `tests/test-watch.sh`   | the isolation watch: status-file contract, transitions, the recurring timer |
 | `tests/test-setup-image.sh` | the build-machine wizard: defaults mode, piped answers, config.env backup/atomicity, interrupt safety |
 | `tests/test-flash-image.sh` | the flash entry point: image reuse, conversion, and the disk-safety refusals (system disk, unknown disk, bad confirmation) |
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for style and review expectations.
+| `tests/test-compliance.sh` | the post-install compliance gate: verdict, missing-step detection, boot-block marker |
+| `tests/test-maint.sh` | the maintenance tools: package/SBOM run and the secure-erase dry-run guard |
 
 ## Security
 
-Isolation between environments is the core guarantee of this project. To report a
-vulnerability privately, see [SECURITY.md](SECURITY.md). Secrets live only in the
-git-ignored `config.env` or on the appliance — never in the repository or a
-shipped image.
+Isolation between environments is the core guarantee of this project. Secrets live
+only in the git-ignored `config.env` or on the appliance — never in the repository
+or a shipped image.
 
 Supply-chain integrity:
 
