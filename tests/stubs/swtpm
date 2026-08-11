@@ -1,0 +1,6 @@
+#!/bin/sh
+# stub: swtpm — the software TPM backend. create.sh only needs `command -v swtpm`
+# to succeed for the Windows path; it never runs it directly (libvirt does).
+: "${STUB_LOG:=/tmp/stub.log}"
+printf 'swtpm %s\n' "$*" >> "$STUB_LOG"
+exit 0

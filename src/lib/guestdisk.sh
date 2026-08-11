@@ -97,15 +97,35 @@ gd_attach() {
   udevadm settle >/dev/null 2>&1 || sleep 1
 
   GD_MNT="$(mktemp -d)"
-  for _p in "$GD_NBD"p* "$GD_NBD"; do
-    [ -b "$_p" ] || continue
-    if [ "$_mode" = "rw" ]; then
-      mount "$_p" "$GD_MNT" 2>/dev/null || continue
-    else
-      mount -o ro "$_p" "$GD_MNT" 2>/dev/null || continue
+  # SECURITY: mount with `nosymfollow` (Linux >=5.10). The guest fully controls
+  # its own disk while it is shut off, so it can pre-plant a symlink at any path
+  # a host-side offline edit will touch (/etc/shadow, /etc/sudoers.d/*, the
+  # de-install script under /usr/local/sbin, /home/<user>) whose ABSOLUTE target
+  # the host kernel resolves against the HOST root. A later `guest-doctor.sh
+  # --password/--install-de` or the create.sh login pre-seed would then write
+  # THROUGH that symlink as root, into a host file — a VM->host root escape that
+  # breaks the whole multi-level premise. `nosymfollow` makes the kernel refuse
+  # to traverse ANY symlink on this mount, so such a write fails closed instead.
+  # None of the files these paths touch are symlinks on a stock cloud image, so
+  # legitimate access is unaffected. Fall back (with a LOUD warning, never
+  # silently) on kernels/mount binaries without the option, so the recovery path
+  # still works — but the operator is told the hardening is off.
+  _ro=""; [ "$_mode" = "rw" ] || _ro="ro,"
+  for _try in "${_ro}nosymfollow" "__legacy__"; do
+    if [ "$_try" = "__legacy__" ]; then
+      warn "guestdisk: 'nosymfollow' unsupported here — offline guest-disk edits are NOT hardened against guest-planted symlinks (needs Linux>=5.10 + util-linux/busybox mount that supports it). Only inspect/repair guests you trust."
+      _try="${_ro%,}"
     fi
-    if [ -f "$GD_MNT/etc/passwd" ]; then return 0; fi
-    umount "$GD_MNT" 2>/dev/null || true
+    for _p in "$GD_NBD"p* "$GD_NBD"; do
+      [ -b "$_p" ] || continue
+      if [ -n "$_try" ]; then
+        mount -o "$_try" "$_p" "$GD_MNT" 2>/dev/null || continue
+      else
+        mount "$_p" "$GD_MNT" 2>/dev/null || continue
+      fi
+      if [ -f "$GD_MNT/etc/passwd" ]; then return 0; fi
+      umount "$GD_MNT" 2>/dev/null || true
+    done
   done
 
   warn "guestdisk: no partition on $_disk carries /etc/passwd — nothing to inspect."

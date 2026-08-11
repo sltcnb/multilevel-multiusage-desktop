@@ -111,6 +111,11 @@ emit_egress() {
     printf '    ip saddr %s counter drop\n' "$net"
   else
     printf '    ip saddr %s oifname "%s" accept\n' "$net" "$WAN_IFACE"
+    # Same VPN carve-out as the whitelist branch: with the forward chain now at
+    # `policy drop` (below), a mode=all env that is ALSO VPN-locked would have
+    # its tunnel-bound traffic dropped — the WAN accept above never matches an
+    # oifname of wg<idx>. Accept it explicitly. Harmless when no wg<idx> exists.
+    printf '    ip saddr %s oifname "wg%s" accept\n' "$net" "$idx"
   fi
 }
 
@@ -154,7 +159,17 @@ delete table inet appliance_isol
 
 table inet appliance_isol {
   chain forward {
-    type filter hook forward priority -1; policy accept;
+    # FAIL CLOSED: policy drop, not accept. Previously this chain relied ENTIRELY
+    # on its explicit per-pair drop rules matching, and fell through to `policy
+    # accept` for anything they missed — so a single un-generated pair (subnet /
+    # bridge drift, a new env type, a partial reload) or a host lacking the
+    # assumed base `inet filter` drop-policy (the Debian/systemd path defines no
+    # such table) left those environments able to route to each other. With
+    # `policy drop`, inter-VM forwarding is IMPOSSIBLE unless a rule below
+    # explicitly permits it, and the only permits below are egress to the WAN /
+    # the env's own VPN tunnel and established return traffic — never VM->VM.
+    # Isolation no longer depends on a base table this repo does not write.
+    type filter hook forward priority -1; policy drop;
     # HARD BLOCK: every enabled-env subnet -> every OTHER env subnet (both dirs).
     # These come FIRST, ahead of the conntrack fast-path below: a cross-env flow
     # that was established before these rules existed (or during a window where
@@ -361,6 +376,74 @@ cat <<EOF
 Isolation verification complete: $PASSED passed, $FAILED failed, $SKIPPED skipped.
 If SKIPPED: wait for guests to finish cloud-init, then re-run:  ./src/environments/isolate.sh
 EOF
+
+# -----------------------------------------------------------------------------
+# 4a. Eject the cloud-init provisioning seed once the guest has consumed it.
+#
+# The NoCloud seed ISO carries the guest+root password — a SHA512 hash in
+# user-data AND, in the chpasswd runcmd, the password in PLAINTEXT. Left
+# attached, it is a CD-ROM any process inside the guest can mount (`mount
+# /dev/sr0`) and read. Because the SAME secret provisions every environment,
+# that copy is the lateral-movement seed for a cross-domain pivot: a compromised
+# office VM lifts the administration VM's credential straight off its own seed.
+#
+# cloud-init only needs the seed on FIRST boot; create.sh ALSO pre-seeded the
+# login + networking OFFLINE into the disk (gd_set_password / gd_seed_network),
+# so the guest stays fully functional once the seed is gone. So the moment we
+# can confirm cloud-init has FINISHED, detach the CD-ROM from both the live
+# domain and its persistent config, then shred the ISO on the host.
+#
+# Honest about "not yet": a guest whose agent is down, or whose cloud-init is
+# still running, KEEPS its seed and is retried on the next isolate.sh run — it
+# never loses the login to a premature eject. This is orthogonal to the
+# isolation verdict above, so it touches neither FAILED nor the exit status.
+# Default ON; set EJECT_SEEDS=0 to keep seeds attached (e.g. debugging a boot).
+# -----------------------------------------------------------------------------
+if [ "${EJECT_SEEDS:-1}" = "1" ]; then
+  step "Eject provisioning seeds"
+  for a in $LIST; do
+    ea="${a%:*}"
+    # Windows guests use an autounattend ISO, not a NoCloud seed. Both are named
+    # *-seed.iso / *-unattend.iso by create.sh; match only the cloud-init seed.
+    seed="$(virsh domblklist "$ea" 2>/dev/null | awk '$NF ~ /-seed\.iso$/ {print $NF; exit}')"
+    if [ -z "$seed" ]; then
+      log "[$ea] no cloud-init seed attached (already ejected) — nothing to do."
+      continue
+    fi
+    # Only eject once cloud-init has actually finished, so a guest whose first
+    # boot is still installing the desktop keeps the seed it is still reading.
+    # guest_exec returns the in-guest exit code; grep matches the terminal states.
+    fin="$(guest_exec "$ea" "cloud-init status 2>/dev/null | grep -Eq 'status: (done|error|disabled)'")"
+    case "$fin" in
+      0) : ;;                                  # cloud-init finished -> safe to eject
+      AGENT_DOWN|TIMEOUT|"")
+        warn "[$ea] guest agent not ready — seed kept; re-run isolate.sh once first boot finishes."
+        continue ;;
+      *)
+        warn "[$ea] cloud-init still running — seed kept; re-run isolate.sh once it finishes."
+        continue ;;
+    esac
+    # Detach from the LIVE domain AND the PERSISTENT config. The cdrom's target
+    # dev is auto-assigned by libvirt, so resolve it by source path (domblklist
+    # prints "Target Source"; the source is the last column).
+    tgt="$(virsh domblklist "$ea" 2>/dev/null | awk -v f="$seed" '$NF==f {print $1; exit}')"
+    if [ -n "$tgt" ]; then
+      virsh detach-disk "$ea" "$tgt" --live --config 2>/dev/null \
+        || virsh detach-disk "$ea" "$tgt" --config 2>/dev/null \
+        || { warn "[$ea] could not detach seed cdrom '$tgt' — leaving $seed in place."; continue; }
+    fi
+    # Remove the ISO from the host ONLY once nothing in the persistent (inactive)
+    # config still points at it — a dangling <source> would wedge the next start.
+    # shred: the file still holds the plaintext password.
+    if [ -z "$(virsh domblklist "$ea" --inactive 2>/dev/null | awk -v f="$seed" '$NF==f {print $1; exit}')" ]; then
+      shred -u "$seed" 2>/dev/null || rm -f "$seed" 2>/dev/null || true
+      ok "[$ea] cloud-init seed ejected + shredded ($seed)."
+      audit_event seed-eject env="$ea" seed="$(basename "$seed")"
+    else
+      warn "[$ea] seed still referenced by the persistent config — not removing $seed."
+    fi
+  done
+fi
 
 # -----------------------------------------------------------------------------
 # 5. Continuous assurance. Everything above is a snapshot: it proves isolation

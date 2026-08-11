@@ -298,21 +298,31 @@ env_index() {
 # env_enabled ENV -> 0 (true) if ${ENV}_ENABLED != 0, else 1 (false).
 env_enabled() { [ "$(env_val "$1" ENABLED 1)" != "0" ]; }
 # for_each_enabled_env: prints "<env> <index>" per enabled env, in order.
+# The explicit `return 0` is load-bearing: without it the function's exit status
+# is that of the LAST iteration's `[ … ] && printf`, which is non-zero whenever
+# the last-listed env is DISABLED. Callers pipe this into `while read` under
+# `set -o pipefail` + `set -e`, so a non-zero here aborts the whole script the
+# moment an operator disables the last env in ENVS.
 for_each_enabled_env() {
   _i=0
   for _e in $ENVS; do
     _i=$((_i+1))
     [ "$(env_val "$_e" ENABLED 1)" != "0" ] && printf '%s %s\n' "$_e" "$_i"
   done
+  return 0
 }
 # Derived, stable per-env attributes (by name/index).
 env_net()    { printf 'isol-%s' "$1"; }             # libvirt network name
 env_bridge() { printf 'virbr%s' "$2"; }             # bridge iface (<=15 chars)
 env_subnet() { printf '%s.%s' "${SUBNET_BASE:-10.10}" "$2"; }  # /24 third octet = index
 # OS -> base image / os-variant / download URL.
-os_base()    { case "$1" in ubuntu) printf '%s/base-ubuntu.img' "$IMAGES_DIR";; arch) printf '%s/base-arch.qcow2' "$IMAGES_DIR";; debian) printf '%s/base-debian.qcow2' "$IMAGES_DIR";; *) return 1;; esac; }
-os_variant() { case "$1" in ubuntu) printf '%s' "${UBUNTU_OS_VARIANT:-ubuntu22.04}";; arch) printf '%s' "${ARCH_OS_VARIANT:-archlinux}";; debian) printf '%s' "${DEBIAN_OS_VARIANT:-debian12}";; esac; }
-# os_family: apt-based (ubuntu/debian) vs arch. Drives cloud-init package steps.
-os_family()  { case "$1" in ubuntu|debian) printf 'apt';; arch) printf 'arch';; *) printf 'apt';; esac; }
+# windows has NO cloud base image (it installs from an operator-supplied ISO);
+# os_base prints a sentinel so the create loop does not treat it as "unsupported
+# OS" and skip it — create_windows_vm ignores the value.
+os_base()    { case "$1" in ubuntu) printf '%s/base-ubuntu.img' "$IMAGES_DIR";; arch) printf '%s/base-arch.qcow2' "$IMAGES_DIR";; debian) printf '%s/base-debian.qcow2' "$IMAGES_DIR";; windows) printf 'windows-iso';; *) return 1;; esac; }
+os_variant() { case "$1" in ubuntu) printf '%s' "${UBUNTU_OS_VARIANT:-ubuntu22.04}";; arch) printf '%s' "${ARCH_OS_VARIANT:-archlinux}";; debian) printf '%s' "${DEBIAN_OS_VARIANT:-debian12}";; windows) printf '%s' "${WINDOWS_OS_VARIANT:-win11}";; esac; }
+# os_family: apt-based (ubuntu/debian) vs arch vs windows. Drives which
+# provisioning path create.sh takes (cloud-init seed vs autounattend ISO).
+os_family()  { case "$1" in ubuntu|debian) printf 'apt';; arch) printf 'arch';; windows) printf 'windows';; *) printf 'apt';; esac; }
 # Upper-case an env name for trust-bar labels (office -> OFFICE). Portable.
 env_title() { printf '%s' "$1" | tr '[:lower:]' '[:upper:]'; }

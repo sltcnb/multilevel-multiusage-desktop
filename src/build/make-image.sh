@@ -136,6 +136,7 @@ apk add -q \
   qemu-system-x86_64 qemu-img qemu-modules \
   libvirt libvirt-daemon dbus polkit \
   virt-install virt-viewer \
+  ovmf swtpm \
   nftables wireguard-tools \
   xorg-server xf86-video-modesetting xf86-input-libinput setxkbmap \
   xkeyboard-config xkbcomp \

@@ -162,6 +162,7 @@ elif [ "$PKG" = "apk" ]; then
     qemu-system-x86_64 qemu-img qemu-modules \
     libvirt libvirt-daemon dbus polkit \
     virt-install virt-viewer \
+    ovmf swtpm \
     nftables wireguard-tools \
     xorg-server xf86-video-modesetting xf86-input-libinput setxkbmap \
     xkeyboard-config xkbcomp \
@@ -185,6 +186,7 @@ else
     qemu-system-x86 qemu-utils \
     libvirt-daemon-system libvirt-clients \
     virtinst virt-viewer \
+    ovmf swtpm \
     nftables wireguard-tools \
     xserver-xorg xinit i3 fonts-dejavu \
     cloud-image-utils genisoimage wget curl openssl

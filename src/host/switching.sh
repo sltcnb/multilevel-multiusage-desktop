@@ -538,7 +538,14 @@ export DISPLAY XAUTHORITY
 MSG="i3-msg"; [ -n "\$I3SOCK" ] && MSG="i3-msg -s \$I3SOCK"
 # Breadcrumb so a dead hotkey is diagnosable: if this file grows on each press,
 # keyd is firing and the problem is downstream; if it never appears, keyd isn't.
-echo "\$(date '+%H:%M:%S') arg=\$1 disp=\$DISPLAY sock=\${I3SOCK:-NONE} pid=\${pid:-NONE}" >> /tmp/vmswitch.log 2>&1
+# Log under a root-only dir in /run, NOT a fixed /tmp path: this helper runs as
+# root on every hotkey, and any local user (incl. the kiosk) could pre-plant
+# /tmp/vmswitch.log as a symlink onto a root-owned file and have root corrupt it
+# here. /run is root-owned tmpfs the kiosk cannot write, so it cannot pre-create
+# this dir or a symlink inside it.
+VMSW_LOGD=/run/appliance; mkdir -p "\$VMSW_LOGD" 2>/dev/null; chmod 700 "\$VMSW_LOGD" 2>/dev/null
+VMSW_LOG="\$VMSW_LOGD/vmswitch.log"
+echo "\$(date '+%H:%M:%S') arg=\$1 disp=\$DISPLAY sock=\${I3SOCK:-NONE} pid=\${pid:-NONE}" >> "\$VMSW_LOG" 2>&1
 # term/portal switch to a dedicated EMPTY workspace first, then exec — otherwise
 # the xterm/browser opens behind the focused VM's fullscreen window and is never
 # seen. Switching away also drops SPICE's keyboard grab, so normal keys work there.
@@ -547,7 +554,7 @@ case "\$1" in
   portal) \$MSG "workspace number $WS_PORTAL; exec $PORTAL_SH" ;;
   usb)    \$MSG "workspace number $WS_USB; exec xterm -T 'Route YubiKey' -e $APP_ROOT/host/usb-to-vm.sh" ;;
   *)      \$MSG workspace number "\$1" ;;
-esac >> /tmp/vmswitch.log 2>&1
+esac >> "\$VMSW_LOG" 2>&1
 EOF
 chmod +x /usr/local/bin/vmswitch
 

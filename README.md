@@ -22,12 +22,17 @@ that maps each recommendation to what the appliance actually does.
 
 | Hotkey    | Environment      | Purpose                        | Default OS | Desktop |
 |-----------|------------------|--------------------------------|------------|---------|
-| `Super+1` | **office**       | Everyday work, email, browsing | Ubuntu     | GNOME   |
+| `Super+1` | **office**       | Everyday work, email, browsing | Windows 11 | native  |
 | `Super+2` | **development**  | Coding, dev tools              | Arch       | GNOME   |
 | `Super+3` | **administration** | Sensitive/admin tasks        | Arch       | GNOME   |
 
-The office VM runs Ubuntu because that's the only Linux that Microsoft's Intune /
-Entra enrollment supports; the other two can be whatever you like.
+The office VM defaults to **Windows 11** so it gets first-class Entra ID join,
+Intune MDM and native Microsoft 365 / Teams / Outlook. Windows needs an install
+ISO you supply (`WINDOWS_ISO`) and installs unattended on a q35 + UEFI + vTPM
+profile — see "Configuration" and "How the automated install of guests works".
+Prefer a lighter, no-license Linux office? Set `office_OS="ubuntu"`
+(`office_DE="gnome"`); Intune there is the limited `intune-portal` client. The
+other two environments can be any supported OS.
 
 ## What it looks like
 
@@ -317,7 +322,12 @@ administration_ENABLED=1; administration_OS="arch"; administration_DE="gnome"
   so enabling or disabling one never renumbers the others. Disable with
   `<env>_ENABLED=0`.
 - **OS** — `ubuntu`, `arch`, or `debian` (all provisioned identically via
-  cloud-init). The office VM must stay Ubuntu for Entra/Intune.
+  cloud-init), or `windows` for a Windows 11 environment. Windows takes a
+  separate path (unattended ISO install on q35 + UEFI + vTPM; no cloud-init) and
+  needs `WINDOWS_ISO` set to a Windows 11 install ISO you supply — the repo
+  cannot download or license Windows. It also wants more resources
+  (`<env>_VCPU>=2`, `RAM_MB>=4096`, `DISK_GB>=64`). `virtio-win` and the SPICE
+  guest tools are fetched automatically.
 - **Desktop** — `<env>_DE` accepts `gnome`, `xfce4`, `kde`, `mate`, `lxqt`, or
   `none` for a CLI-only guest.
 - **Egress** — `<env>_EGRESS_MODE=all|whitelist` plus `<env>_EGRESS_ALLOW="ip ip"`.
@@ -347,13 +357,16 @@ Don't bake secrets into a shipped image — set them on the appliance instead.
 
 ## Enterprise integrations
 
-- **office → Intune / Entra.** With `office_INTUNE=1` the office VM is prepared for
-  Microsoft Intune enrollment (Ubuntu-only, which is why office is Ubuntu). The
-  actual enrollment is interactive after first boot.
-- **office → Outlook + Teams.** With `office_MSAPPS=1` these are installed as Edge
-  progressive web apps. Microsoft discontinued the native Linux Teams client and
-  the community wrapper gets blocked by Conditional Access, so the Edge PWAs are
-  the path that actually works with managed sign-in.
+- **office → Intune / Entra.** With `office_INTUNE=1` the office VM is an
+  Entra/Intune device. On **Windows 11 (the default)** this is native, full MDM:
+  Entra ID join, device-compliance evaluation and Conditional Access, performed
+  interactively / by policy after first boot. On an Ubuntu office VM it is the
+  limited `intune-portal` client instead.
+- **office → Outlook + Teams / M365.** On Windows, install native Microsoft 365 /
+  Teams / Outlook via Intune or the Company Portal after enrollment. On an Ubuntu
+  office VM, `office_MSAPPS=1` installs them as Edge progressive web apps
+  (Microsoft dropped the native Linux Teams client and the community wrapper gets
+  blocked by Conditional Access, so the managed-Edge PWAs are the path that works).
 - **development / administration → Wazuh.** Set `<env>_WAZUH=1` and `WAZUH_MANAGER`
   and those VMs auto-enroll the Wazuh agent for monitoring (apt on Ubuntu/Debian,
   AUR on Arch).
@@ -377,6 +390,7 @@ setup-machine.sh          on the appliance: menu of the remaining steps (create 
 src/lib/common.sh             shared helpers: logging, guards, config, the environment model, the audit log
 src/lib/guestdisk.sh          mount a shut-off guest's disk from the host (qemu-nbd); offline password/account repair
 src/lib/de-install.sh         one definition of the guest desktop installer, shared by create.sh and guest-doctor.sh
+src/lib/windows-unattend.sh   Windows 11 answer-file (autounattend.xml) generator — the Windows counterpart to de-install.sh
 src/build/make-image.sh       build the bootable Alpine image (runs in Docker)
 src/installer/install-to-disk.sh  clone the image onto the internal disk, optional LUKS
 src/host/
@@ -421,6 +435,20 @@ seed carries — the account, the desktop, the guest agent — only happens if
 cloud-init runs, so a datasource it declines to read used to lock the operator
 out of all three environments at once, with no way in and no way to find out
 why.
+
+**Windows is a separate path.** There is no Windows cloud image and no cloud-init,
+so a `windows` environment installs from the ISO you supply (`WINDOWS_ISO`),
+driven by an `autounattend.xml` the appliance generates
+(`src/lib/windows-unattend.sh`) and hands to Windows Setup on a tiny CD. It runs
+on the profile Windows 11 requires — **q35 + UEFI + a software TPM (swtpm) +
+Secure Boot capability** — which is a different machine/firmware than the SeaBIOS
+Linux guests use. For a hands-off first install the target disk is presented as
+SATA and the NIC as `e1000e` (both have inbox Windows drivers, so Setup needs no
+driver injection), and `virtio-win` (drivers + `qemu-guest-agent`) plus the SPICE
+guest tools install on first logon. The first boot runs Setup unattended
+(~20–40 min); if the very first boot shows "Press any key to boot from CD", press
+one key (only the first boot can reach that prompt). None of the Linux offline
+resilience (password/network pre-seed, `guest-doctor`) applies to a Windows guest.
 
 ## When a guest goes wrong
 
@@ -564,6 +592,7 @@ IN_CONTAINER=1 ./tests/run.sh    # already on a suitable Linux host, as root
 |------|--------|
 | `tests/test-common.sh`  | the environment model, `config.env` handling, secret generation and scrubbing |
 | `tests/test-create.sh`  | VM creation, cloud-init generation, DE/integration wiring, supply-chain guards |
+| `tests/test-windows.sh` | the Windows 11 office path: the q35+UEFI+vTPM virt-install profile, the media it attaches, the generated autounattend.xml, and the no-ISO fail-closed |
 | `tests/test-isolate.sh` | the isolation ruleset, egress policy, and the verification result |
 | `tests/test-host.sh`    | hardening, the kiosk desktop, switching/trust bar, Wi-Fi, captive portal |
 | `tests/test-ops.sh`     | the setup menu, USB routing, password changes, VPN, secret scrubbing |

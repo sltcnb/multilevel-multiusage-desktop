@@ -24,6 +24,8 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/../lib/de-install.sh"
 # shellcheck source=../lib/guestdisk.sh
 . "$HERE/../lib/guestdisk.sh"
+# shellcheck source=../lib/windows-unattend.sh
+. "$HERE/../lib/windows-unattend.sh"
 require_root
 load_config
 require_cmds virt-install virsh qemu-img wget openssl sha256sum sha512sum gpg
@@ -51,6 +53,23 @@ mkdir -p "$IMAGES_DIR" "$CACHE_DIR"
 : "${ARCH_IMG_URL:=https://geo.mirror.pkgbuild.com/images/${ARCH_IMG_DATE:-latest}/Arch-Linux-x86_64-cloudimg.qcow2}"
 # Debian official genericcloud qcow2 (bookworm) — ships cloud-init.
 : "${DEBIAN_IMG_URL:=https://cloud.debian.org/images/cloud/bookworm/${DEBIAN_IMG_DATE:-latest}/debian-12-genericcloud-amd64.qcow2}"
+
+# -----------------------------------------------------------------------------
+# Windows 11 office guest (OS=windows). Unlike the Linux guests there is NO
+# cloud image and NO cloud-init: Windows installs from an ISO YOU supply, driven
+# by an autounattend.xml this repo generates (see lib/windows-unattend.sh). This
+# repo can neither download nor license Windows, so WINDOWS_ISO is REQUIRED and
+# has no default — create.sh fails closed with guidance if OS=windows and it is
+# unset. virtio-win (drivers + qemu-guest-agent) and the SPICE guest tools
+# (spice-vdagent, for viewer auto-resize) ARE freely redistributable and are
+# fetched automatically.
+: "${WINDOWS_ISO:=}"                        # REQUIRED for OS=windows: path to a
+                                            # Windows 11 install ISO (operator-supplied).
+: "${VIRTIO_WIN_URL:=https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/stable-virtio/virtio-win.iso}"
+: "${VIRTIO_WIN_SHA256:=}"                  # optional pin, same model as *_IMG_SHA256.
+: "${SPICE_GUEST_TOOLS_URL:=https://www.spice-space.org/download/windows/spice-guest-tools/spice-guest-tools-latest.exe}"
+: "${WIN_LOCALE:=en-US}"                    # Windows install locale.
+: "${WIN_TZ:=UTC}"                          # Windows time zone (matches the appliance).
 
 # -----------------------------------------------------------------------------
 # Base image integrity pinning (OPTIONAL but recommended — supply-chain).
@@ -189,6 +208,19 @@ img_gpg_fpr() {
 # -----------------------------------------------------------------------------
 GUEST_PASSWORD="$(require_secret GUEST_PASSWORD)"
 
+# env_guest_password ENV — the login/root password for THIS environment. Prefer a
+# per-env secret (<ENV>_GUEST_PASSWORD in config.env), else fall back to the
+# global GUEST_PASSWORD. Distinct per-domain secrets are what break the SO-1
+# pivot: with ONE shared value present on every domain, recovering it in the
+# least-trusted environment hands the attacker the most-trusted one (and root).
+# Set e.g. administration_GUEST_PASSWORD to a value used NOWHERE else. Never
+# auto-generated (see require_secret): an unset per-env var simply inherits the
+# global, so existing single-password installs behave exactly as before.
+env_guest_password() {
+  _egp="$(env_val "$1" GUEST_PASSWORD)"
+  [ -n "$_egp" ] && printf '%s' "$_egp" || printf '%s' "$GUEST_PASSWORD"
+}
+
 # -----------------------------------------------------------------------------
 # ensure_net NAME BRIDGE SUBNET  — define+start an ISOLATED NAT network.
 #   forward mode 'nat' gives outbound internet; each net has its own bridge and
@@ -251,8 +283,9 @@ make_seed() {
   #     is removed in new cloud-init, its `users` dialect is unknown to old
   #     ones, and specifying both is a hard error — "list and user commands
   #     not supported". The binary has no such versioning problems.)
-  _pw_hash="$(openssl passwd -6 "$GUEST_PASSWORD")"
-  _sh_pw="${GUEST_PASSWORD//\'/\'\\\'\'}"
+  _gp="$(env_guest_password "$vm")"
+  _pw_hash="$(openssl passwd -6 "$_gp")"
+  _sh_pw="${_gp//\'/\'\\\'\'}"
 
   # ---- write_files accumulator ----------------------------------------------
   # Files the guest needs are shipped as cloud-init write_files entries with
@@ -450,7 +483,12 @@ users:
     lock_passwd: false
     shell: /bin/bash
     passwd: '$_pw_hash'
-ssh_pwauth: true
+# SSH password auth OFF (was on): nothing in the appliance logs into a guest over
+# SSH — the host drives guests through the qemu-guest-agent, and the operator
+# logs in at the SPICE console — so password SSH is pure attack surface for the
+# (possibly shared, possibly weak) guest password. Console/viewer login is
+# unaffected. Set <env>_SSH_PWAUTH=1 only if you deliberately need it.
+ssh_pwauth: $( [ "$(env_val "$vm" SSH_PWAUTH 0)" = "1" ] && printf true || printf false )
 # Files the guest needs, shipped base64 so no shell/YAML escaping layer can
 # mangle them, and written in cloud-init's INIT stage — on disk before any
 # runcmd below refers to them. Empty unless this env installs a desktop.
@@ -466,10 +504,18 @@ $de_runcmd_lines
 $power_state_lines
 # NOTE: no shared-folder / no cross-VM anything provisioned here (isolation).
 EOF
-  umask 022   # restore: the seed ISO must stay readable by the qemu process
-  # Build the NoCloud seed ISO. Prefer cloud-localds; else xorriso's mkisofs
-  # (installed via virt-install on Alpine); else genisoimage (Debian path).
-  # The volume label MUST be "cidata" for cloud-init NoCloud to pick it up.
+  # Build the NoCloud seed ISO UNDER umask 077 and keep it 0600. The ISO holds
+  # the guest+root password (SHA512 hash in user-data AND plaintext in the
+  # chpasswd runcmd), so it must never be world-readable at rest — the appliance
+  # provisions an unprivileged `kiosk` host user, and a 0644 seed let that user
+  # `strings <env>-seed.iso` and lift the credential that guards every VM. qemu
+  # here runs as root (no qemu.conf user override, no security driver), so 0600
+  # root stays readable to the VM; where libvirt runs qemu unprivileged it
+  # relabels attached disks itself (dynamic_ownership). Belt-and-braces: the seed
+  # is also auto-ejected + shredded once cloud-init consumes it (isolate.sh).
+  umask 077
+  # Prefer cloud-localds; else xorriso's mkisofs (installed via virt-install on
+  # Alpine); else genisoimage (Debian path). Volume label MUST be "cidata".
   seed_iso="$IMAGES_DIR/${vm}-seed.iso"
   if command -v cloud-localds >/dev/null 2>&1; then
     run cloud-localds "$seed_iso" "$seed_dir/user-data" "$seed_dir/meta-data"
@@ -634,10 +680,152 @@ fetch() {
 }
 
 # -----------------------------------------------------------------------------
+# make_unattend_iso VMNAME HOSTNAME -> path to a small ISO holding
+# autounattend.xml (+ the SPICE guest-tools installer). Windows Setup scans every
+# attached optical/removable medium's root for autounattend.xml, so the volume
+# label is not significant. The Windows counterpart to make_seed.
+# -----------------------------------------------------------------------------
+make_unattend_iso() {
+  vm="$1"; host="$2"
+  ud_dir="$CACHE_DIR/unattend-$vm"
+  mkdir -p "$ud_dir"
+  # autounattend.xml carries the guest password in plaintext (same sensitivity as
+  # the Linux user-data). Lock the staging dir to root and write under umask 077;
+  # the plaintext copy is shredded once the ISO is built (the ISO still holds it,
+  # and environments/scrub-secrets.sh clears provisioning media afterwards).
+  chmod 700 "$ud_dir" 2>/dev/null || true
+  umask 077
+  win_autounattend "$GUEST_USER" "$(env_guest_password "$vm")" "$host" "$WIN_LOCALE" "$WIN_TZ" \
+    > "$ud_dir/autounattend.xml"
+  # Bundle the SPICE guest-tools installer so the FirstLogonCommands can find it
+  # on a known medium (virtio-win rides its own ISO). Best-effort.
+  [ -f "$CACHE_DIR/spice-guest-tools.exe" ] \
+    && cp "$CACHE_DIR/spice-guest-tools.exe" "$ud_dir/spice-guest-tools.exe"
+  # Keep umask 077 through the ISO build: autounattend.xml holds the guest
+  # password in plaintext, so the resulting ISO must be 0600, not world-readable
+  # (the kiosk user could otherwise `strings` it). qemu here runs as root; where
+  # libvirt runs it unprivileged it relabels attached media itself.
+  unattend_iso="$IMAGES_DIR/${vm}-unattend.iso"
+  if command -v xorriso >/dev/null 2>&1; then
+    run xorriso -as mkisofs -o "$unattend_iso" -V UNATTEND -J -r "$ud_dir"
+  elif command -v genisoimage >/dev/null 2>&1; then
+    run genisoimage -output "$unattend_iso" -volid UNATTEND -joliet -rock "$ud_dir"
+  elif command -v mkisofs >/dev/null 2>&1; then
+    run mkisofs -output "$unattend_iso" -volid UNATTEND -joliet -rock "$ud_dir"
+  else
+    die "No ISO builder found (xorriso/genisoimage/mkisofs) to build the Windows answer file."
+  fi
+  shred -u "$ud_dir/autounattend.xml" 2>/dev/null || rm -f "$ud_dir/autounattend.xml"
+  echo "$unattend_iso"
+}
+
+# -----------------------------------------------------------------------------
+# create_windows_vm NAME NET VCPU RAM DISKGB — the Windows 11 path.
+#   Fresh empty disk + operator's Windows ISO + virtio-win + our autounattend
+#   ISO, booted on a q35 + UEFI + vTPM profile (what Windows 11 requires — a
+#   DIFFERENT machine/firmware than the SeaBIOS Linux guests). No --import: an
+#   actual unattended Setup runs on first boot. None of the Linux resilience
+#   (offline password/network pre-seed, cloud-init) applies to NTFS, so the
+#   answer file has to get it right the first time — see lib/windows-unattend.sh.
+# -----------------------------------------------------------------------------
+create_windows_vm() {
+  name="$1"; net="$2"; vcpu="$3"; ram="$4"; disk="$5"
+  vmdisk="$IMAGES_DIR/${name}.qcow2"
+
+  [ -n "$WINDOWS_ISO" ] && [ -f "$WINDOWS_ISO" ] || die "$name is ${name}_OS=windows but WINDOWS_ISO is unset or missing (got '${WINDOWS_ISO:-}'). Set WINDOWS_ISO=/path/to/Win11.iso in config.env — this repo cannot download or license Windows for you."
+
+  _need_mb="$(win_min_disk_mb)"
+  [ "$((disk * 1024))" -ge "$_need_mb" ] \
+    || warn "$name: ${disk} GB disk is below the ~$((_need_mb/1024)) GB floor for Windows 11 — Setup may run out of space. Raise ${name}_DISK_GB in config.env."
+
+  # virtio-win: qemu-guest-agent (isolate.sh talks to it) + display/net drivers.
+  # Cached + integrity-checked exactly like the base cloud images.
+  step "Windows support media"
+  fetch "$VIRTIO_WIN_URL" "$IMAGES_DIR/virtio-win.iso" "$VIRTIO_WIN_SHA256"
+
+  # SPICE guest tools (spice-vdagent -> virt-viewer --auto-resize). Best-effort:
+  # a guest without it still installs, just at a fixed resolution until installed.
+  if [ ! -f "$CACHE_DIR/spice-guest-tools.exe" ]; then
+    if run wget -O "$CACHE_DIR/spice-guest-tools.exe.part" "$SPICE_GUEST_TOOLS_URL"; then
+      mv "$CACHE_DIR/spice-guest-tools.exe.part" "$CACHE_DIR/spice-guest-tools.exe"
+    else
+      rm -f "$CACHE_DIR/spice-guest-tools.exe.part"
+      warn "$name: could not fetch SPICE guest tools — desktop auto-resize will be unavailable until installed by hand."
+    fi
+  fi
+
+  # vTPM needs the swtpm backend on the host; Win11 will not install without it.
+  command -v swtpm >/dev/null 2>&1 \
+    || die "$name: swtpm is not installed — Windows 11 needs a vTPM. Install it on the host (Alpine: apk add swtpm) and re-run."
+
+  # UEFI firmware. Prefer an EXPLICIT OVMF loader path: Alpine's ovmf package
+  # ships no libvirt firmware-descriptor JSON, so `--boot uefi` autoselect finds
+  # nothing and fails. Locations differ per distro, so probe the known ones.
+  _ovmf_code=""; _ovmf_vars=""
+  for _c in /usr/share/OVMF/OVMF_CODE.fd /usr/share/OVMF/OVMF_CODE_4M.fd \
+            /usr/share/edk2/x64/OVMF_CODE.4m.fd /usr/share/edk2-ovmf/x64/OVMF_CODE.fd \
+            /usr/share/ovmf/x64/OVMF_CODE.fd /usr/share/qemu/edk2-x86_64-code.fd; do
+    [ -f "$_c" ] && { _ovmf_code="$_c"; break; }
+  done
+  for _v in /usr/share/OVMF/OVMF_VARS.fd /usr/share/OVMF/OVMF_VARS_4M.fd \
+            /usr/share/edk2/x64/OVMF_VARS.4m.fd /usr/share/edk2-ovmf/x64/OVMF_VARS.fd \
+            /usr/share/ovmf/x64/OVMF_VARS.fd /usr/share/qemu/edk2-i386-vars.fd; do
+    [ -f "$_v" ] && { _ovmf_vars="$_v"; break; }
+  done
+  if [ -n "$_ovmf_code" ] && [ -n "$_ovmf_vars" ]; then
+    _win_boot="loader=$_ovmf_code,loader.readonly=yes,loader.type=pflash,nvram.template=$_ovmf_vars"
+    log "$name: UEFI firmware $_ovmf_code (vars template $_ovmf_vars)"
+  else
+    _win_boot="uefi"   # let libvirt autoselect (works where firmware JSONs exist)
+    warn "$name: no OVMF loader found in the usual paths — falling back to '--boot uefi' autoselect. If virt-install reports no UEFI firmware, install ovmf/edk2 on the host."
+  fi
+
+  log "Preparing empty disk for $name (${disk} GB, Windows 11) ..."
+  run qemu-img create -f qcow2 "$vmdisk" "${disk}G"
+
+  unattend_iso="$(make_unattend_iso "$name" "$name")"
+
+  step "Windows 11 install for $name  (q35 + UEFI + vTPM, ${vcpu} vCPU, ${ram} MB, ${disk} GB)"
+  # boot.order: the (empty) HDD is tried FIRST — it has no EFI entry yet, so UEFI
+  # falls through to the install CD. After Setup writes the boot manager, the HDD
+  # boots directly and the CD is never reached again, so the "press any key to
+  # boot from CD" prompt can only appear on the very first boot.
+  # NIC = e1000e and disk bus = sata: both inbox Windows drivers, so Setup needs
+  # NO driver injection to see the disk or reach the network (virtio would).
+  set -- \
+    --name "$name" \
+    --osinfo win11 \
+    --machine q35 \
+    --memory "$ram" \
+    --vcpus "$vcpu" \
+    --cpu host-passthrough \
+    --boot "$_win_boot" \
+    --tpm backend.type=emulator,backend.version=2.0,model=tpm-crb \
+    --disk path="$vmdisk",format=qcow2,bus=sata,boot.order=1 \
+    --disk device=cdrom,path="$WINDOWS_ISO",boot.order=2 \
+    --disk device=cdrom,path="$IMAGES_DIR/virtio-win.iso" \
+    --disk device=cdrom,path="$unattend_iso" \
+    --network network="$net",model=e1000e \
+    --graphics spice \
+    --video model.type=qxl,model.ram=65536,model.vram=65536,model.vgamem=65536,model.heads=1 \
+    --channel spicevmc \
+    --channel unix,target.type=virtio,target.name=org.qemu.guest_agent.0 \
+    --noautoconsole \
+    --wait 0
+
+  run virt-install "$@" || die "$name: virt-install (Windows) failed — see the output above."
+  run virsh autostart "$name"
+  ok "$name: Windows 11 unattended install started. First boot runs Setup (~20-40 min: partition, copy, OOBE), then autologin as '$GUEST_USER'. If the very first boot shows 'Press any key to boot from CD', press one. Watch: virsh console $name."
+  return 0
+}
+
+# -----------------------------------------------------------------------------
 # create_vm  NAME VARIANT NET VCPU RAM DISKGB BASEIMG HOSTNAME
 #   Copies base cloud image to a per-VM disk, resizes, attaches cloud-init seed,
 #   imports with virt-install (no interactive install — image is prebuilt).
 #   CPU host-passthrough. SPICE graphics (software render; no GPU passthrough).
+#   Windows (OS=windows) diverges entirely -> create_windows_vm (installs from an
+#   ISO; no cloud image, no cloud-init, q35+UEFI+vTPM instead of SeaBIOS).
 # -----------------------------------------------------------------------------
 create_vm() {
   name="$1"; variant="$2"; net="$3"; vcpu="$4"; ram="$5"; disk="$6"; base="$7"; host="$8"
@@ -655,7 +843,8 @@ create_vm() {
         virsh undefine "$name" --nvram --remove-all-storage 2>/dev/null \
           || virsh undefine "$name" --remove-all-storage 2>/dev/null \
           || virsh undefine "$name" 2>/dev/null || true
-        rm -f "$IMAGES_DIR/${name}.qcow2" "$IMAGES_DIR/${name}-seed.iso" 2>/dev/null || true
+        rm -f "$IMAGES_DIR/${name}.qcow2" "$IMAGES_DIR/${name}-seed.iso" \
+              "$IMAGES_DIR/${name}-unattend.iso" 2>/dev/null || true
         ;;
       *)
         warn "VM $name already exists — skipping (idempotent). Set RECREATE=$name (or RECREATE=1) to rebuild."
@@ -666,6 +855,15 @@ create_vm() {
   fi
 
   vmdisk="$IMAGES_DIR/${name}.qcow2"
+
+  # Windows 11 is a wholly separate path (ISO install, q35+UEFI+vTPM, no cloud
+  # image / cloud-init / offline pre-seed). Branch off after the shared RECREATE
+  # handling above; everything below here is Linux cloud-image only.
+  if [ "$(os_family "$(env_val "$name" OS arch)")" = "windows" ]; then
+    create_windows_vm "$name" "$net" "$vcpu" "$ram" "$disk"
+    return
+  fi
+
   # Per-env user-keyed encryption (ANSSI): <env>_ENCRYPT_DISK=1 makes this VM's
   # disk a LUKS-encrypted qcow2, unlocked by <env>_DISK_PASS (a secret the user
   # sets). libvirt holds the secret to start the domain; scrub-secrets blanks
@@ -719,7 +917,7 @@ SX
     # Best-effort by design — an appliance without qemu-nbd still gets the two
     # cloud-init paths, so this can warn and move on but must never abort a build.
     if gd_supported; then
-      _hash="$(openssl passwd -6 "$GUEST_PASSWORD")"
+      _hash="$(openssl passwd -6 "$(env_guest_password "$name")")"
       # The trap is load-bearing: an interrupt between attach and detach leaves
       # /dev/nbdN holding the qcow2 open, and virt-install then fails on a disk
       # that looks perfectly fine on disk.
@@ -831,8 +1029,9 @@ done
 # ENTRA/INTUNE constraint: any env with INTUNE=1 MUST be Ubuntu (Intune Linux
 # enrollment is Ubuntu-only). Enforce so the office/desktop stays Ubuntu.
 for pair in $(for_each_enabled_env | awk '{print $1}'); do
-  if [ "$(env_val "$pair" INTUNE 0)" = "1" ] && [ "$(env_val "$pair" OS arch)" != "ubuntu" ]; then
-    die "$pair has INTUNE=1 but OS=$(env_val "$pair" OS) — Intune/Entra requires Ubuntu. Set ${pair}_OS=ubuntu."
+  _pos="$(env_val "$pair" OS arch)"
+  if [ "$(env_val "$pair" INTUNE 0)" = "1" ] && [ "$_pos" != "ubuntu" ] && [ "$_pos" != "windows" ]; then
+    die "$pair has INTUNE=1 but OS=$_pos — Intune/Entra enrollment is supported on Windows (native MDM/Entra join) or Ubuntu (intune-portal) only. Set ${pair}_OS=windows or ubuntu."
   fi
 done
 
