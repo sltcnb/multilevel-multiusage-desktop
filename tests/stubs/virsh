@@ -46,23 +46,94 @@ case "$cmd" in
               #            pings to a peer environment's gateway return
               #            $STUB_PEER_RC (default 1 = blocked, i.e. isolated).
               #            Set STUB_PEER_RC=0 to simulate an isolation BREACH.
+              #
+              # The "up" guest also has a small real filesystem under
+              # $STUB_STATE/gfs-<domain>/ so the PA-114 diode (environments/
+              # diode.sh) can be tested end to end: the guest-file-open/read/
+              # write/close API and the ls/mkdir/rm/test guest-exec commands the
+              # diode uses operate on that tree, so a file placed in a "source"
+              # guest's outbox really does land in the "destination" guest's inbox.
+              dom="$1"; j="$2"
+              # gfs_real <guest-absolute-path> -> host path inside the fake guest FS.
+              gfs_real() { printf '%s/gfs-%s%s' "$STUB_STATE" "$dom" "$1"; }
               case "${STUB_AGENT:-up}" in
                 down) exit 1 ;;
-                slow) case "$2" in *guest-exec-status*) echo '{"return":{"exited":false}}';;
+                slow) case "$j" in *guest-exec-status*) echo '{"return":{"exited":false}}';;
                                    *) echo '{"return":{"pid":1234}}';; esac ;;
-                *)    case "$2" in
-                        *guest-exec-status*)
-                          pid="$(printf '%s' "$2" | sed -n 's/.*"pid":\([0-9]*\).*/\1/p')"
-                          tgt="$(cat "$STUB_STATE/pid-$pid" 2>/dev/null || echo '')"
-                          case "$tgt" in
-                            *10.10.*) rc="${STUB_PEER_RC:-1}" ;;   # peer env gateway
-                            *)        rc="${STUB_WAN_RC:-0}"  ;;   # the internet
+                *)    case "$j" in
+                        *guest-file-open*)
+                          p="$(printf '%s' "$j" | sed -n 's/.*"path":"\([^"]*\)".*/\1/p')"
+                          m="$(printf '%s' "$j" | sed -n 's/.*"mode":"\([^"]*\)".*/\1/p')"
+                          rp="$(gfs_real "$p")"
+                          case "$m" in
+                            w*) mkdir -p "$(dirname "$rp")" 2>/dev/null; : > "$rp" ;;
+                            *)  [ -f "$rp" ] || { echo '{"error":{"class":"GenericError","desc":"no such file"}}'; exit 0; } ;;
                           esac
-                          printf '{"return":{"exitcode":%s,"exited":true}}\n' "$rc" ;;
+                          h="$(cat "$STUB_STATE/gfseq" 2>/dev/null || echo 100)"; h=$((h+1)); echo "$h" > "$STUB_STATE/gfseq"
+                          printf '%s' "$rp" > "$STUB_STATE/gfh-$dom-$h"
+                          echo 0 > "$STUB_STATE/gfo-$dom-$h"
+                          printf '{"return":%s}\n' "$h" ;;
+                        *guest-file-write*)
+                          h="$(printf '%s' "$j" | sed -n 's/.*"handle":\([0-9]*\).*/\1/p')"
+                          b="$(printf '%s' "$j" | sed -n 's/.*"buf-b64":"\([^"]*\)".*/\1/p')"
+                          rp="$(cat "$STUB_STATE/gfh-$dom-$h" 2>/dev/null)"
+                          cnt=0
+                          if [ -n "$rp" ]; then
+                            printf '%s' "$b" | base64 -d >> "$rp" 2>/dev/null
+                            cnt="$(printf '%s' "$b" | base64 -d 2>/dev/null | wc -c | tr -d ' ')"
+                          fi
+                          printf '{"return":{"count":%s,"eof":false}}\n' "${cnt:-0}" ;;
+                        *guest-file-read*)
+                          h="$(printf '%s' "$j" | sed -n 's/.*"handle":\([0-9]*\).*/\1/p')"
+                          c="$(printf '%s' "$j" | sed -n 's/.*"count":\([0-9]*\).*/\1/p')"; : "${c:=4096}"
+                          rp="$(cat "$STUB_STATE/gfh-$dom-$h" 2>/dev/null)"
+                          off="$(cat "$STUB_STATE/gfo-$dom-$h" 2>/dev/null || echo 0)"
+                          sz="$(wc -c < "$rp" 2>/dev/null || echo 0)"
+                          chunk="$(mktemp)"
+                          dd if="$rp" of="$chunk" bs=1 skip="$off" count="$c" 2>/dev/null
+                          got="$(wc -c < "$chunk" | tr -d ' ')"
+                          b64="$(base64 < "$chunk" | tr -d '\n')"; rm -f "$chunk"
+                          off=$((off+got)); echo "$off" > "$STUB_STATE/gfo-$dom-$h"
+                          eof=false; [ "$off" -ge "$sz" ] 2>/dev/null && eof=true
+                          printf '{"return":{"count":%s,"buf-b64":"%s","eof":%s}}\n' "$got" "$b64" "$eof" ;;
+                        *guest-file-close*)
+                          h="$(printf '%s' "$j" | sed -n 's/.*"handle":\([0-9]*\).*/\1/p')"
+                          rm -f "$STUB_STATE/gfh-$dom-$h" "$STUB_STATE/gfo-$dom-$h" 2>/dev/null
+                          echo '{"return":{}}' ;;
+                        *guest-exec-status*)
+                          pid="$(printf '%s' "$j" | sed -n 's/.*"pid":\([0-9]*\).*/\1/p')"
+                          # A diode fs command had its exit code + stdout computed
+                          # at exec time; return them (out-data base64). Everything
+                          # else keeps the ping-target rc logic isolate.sh relies on.
+                          if [ -f "$STUB_STATE/pidrc-$pid" ]; then
+                            rc="$(cat "$STUB_STATE/pidrc-$pid")"
+                            od="$(base64 < "$STUB_STATE/pidout-$pid" 2>/dev/null | tr -d '\n')"
+                            printf '{"return":{"exitcode":%s,"out-data":"%s","exited":true}}\n' "$rc" "$od"
+                          else
+                            tgt="$(cat "$STUB_STATE/pid-$pid" 2>/dev/null || echo '')"
+                            case "$tgt" in
+                              *10.10.*) rc="${STUB_PEER_RC:-1}" ;;   # peer env gateway
+                              *)        rc="${STUB_WAN_RC:-0}"  ;;   # the internet
+                            esac
+                            printf '{"return":{"exitcode":%s,"exited":true}}\n' "$rc"
+                          fi ;;
                         *)
                           n="$(cat "$STUB_STATE/pidseq" 2>/dev/null || echo 1000)"
                           n=$((n+1)); echo "$n" > "$STUB_STATE/pidseq"
-                          printf '%s' "$2" > "$STUB_STATE/pid-$n"
+                          printf '%s' "$j" > "$STUB_STATE/pid-$n"
+                          # Recognise the diode's own fs commands and run them for
+                          # real against the fake guest FS, stashing rc + stdout.
+                          cmd="$(printf '%s' "$j" | sed -n 's/.*"-c","\(.*\)"\],"capture-output.*/\1/p')"
+                          gp="$(printf '%s' "$cmd" | sed -n "s/[^']*'\([^']*\)'.*/\1/p")"
+                          rp=""; [ -n "$gp" ] && rp="$(gfs_real "$gp")"
+                          w="${cmd%% *}"
+                          case "$w" in
+                            ls)    ls -1 -- "$rp" 2>/dev/null > "$STUB_STATE/pidout-$n" || : > "$STUB_STATE/pidout-$n"; echo 0 > "$STUB_STATE/pidrc-$n" ;;
+                            mkdir) mkdir -p -- "$rp" 2>/dev/null; : > "$STUB_STATE/pidout-$n"; echo 0 > "$STUB_STATE/pidrc-$n" ;;
+                            rm)    rm -f -- "$rp" 2>/dev/null; : > "$STUB_STATE/pidout-$n"; echo 0 > "$STUB_STATE/pidrc-$n" ;;
+                            test)  if [ -e "$rp" ]; then printf 'EXISTS' > "$STUB_STATE/pidout-$n"; else : > "$STUB_STATE/pidout-$n"; fi; echo 0 > "$STUB_STATE/pidrc-$n" ;;
+                            *)     : ;;   # ping / cloud-init / other: fall back to target rc logic
+                          esac
                           printf '{"return":{"pid":%s}}\n' "$n" ;;
                       esac ;;
               esac ;;

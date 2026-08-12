@@ -110,8 +110,9 @@ keeping one `.1` generation). One line per event:
 ```
 
 Recorded today: isolation-check state transitions (the watch), captive-portal
-logins, USB-to-VM routing decisions, and update checks/applications/rollbacks.
-Two properties matter more than the list:
+logins, USB-to-VM routing decisions, update checks/applications/rollbacks, and
+file-diode transfers (every accepted or refused inter-domain file, with its
+hash and direction — see below). Two properties matter more than the list:
 
 - **It never blocks the action it records.** If the log can't be written, the
   portal login, USB routing or update still happens — auditing is a witness,
@@ -122,6 +123,62 @@ Two properties matter more than the list:
 
 Read it as root with `tail -f /var/log/appliance-audit.log`, or with
 `audit_tail` from `src/lib/common.sh`.
+
+## Inter-domain file diodes (ANSSI-PA-114 §3.18)
+
+The default is **no exchange at all** between environments — that is the whole
+point of the isolation above, and it is exactly what PA-114 requires ("*Les
+communications entre domaines utilisateurs sont proscrites*"). PA-114 §3.18 then
+allows **one** narrow, optional exception when file exchange is genuinely needed
+and authorized: a **diode** — a *unidirectional, mediated, logged* transfer of
+**files** between two named domains. `src/environments/diode.sh` implements that
+and only that. It is **off** unless you set `DIODES`.
+
+A diode here is **not** a one-way firewall rule. §3.18 forbids using it to create
+"*un canal de communication non surveillé d'un domaine utilisateur à un autre*",
+and a one-way IP allow is precisely that (a stateful TCP allow isn't even one-way
+at the data layer). So the diode never touches the guest network: the isolation
+ruleset stays a total all-pairs DROP, and the only thing that ever bridges two
+domains is the **host**, moving bytes it has read and you have accepted, over
+each guest's qemu-guest-agent channel. The two domains have no path to each other
+at any layer.
+
+How a transfer works, and how it maps to §3.18:
+
+1. **Queue it in the source (§3.18.3).** In the sending VM, drop the file into
+   `~/diode-out/<destination-env>/`. Nothing leaves that you did not put there.
+2. **Run the diode (§3.18.2).** `./setup-machine.sh 11` (or
+   `src/environments/diode.sh`). Only the `SRC>DST` pairs in `DIODES` flow, in
+   that direction; an unlisted or reversed pair is refused.
+3. **Accept it on the host (§3.18.4).** For each file the host shows the name,
+   size and sha256 and asks you to confirm. The prompt runs on the socle — a
+   support surface outside every user domain. (`--yes` skips it for automation;
+   `--list` shows what is pending without moving anything.)
+4. **It is vetted, optionally (§3.18.6).** With `DIODE_SCAN=1` the host copy is
+   run past a pattern deny-list and clamav (if installed) before delivery; a hit
+   refuses the file.
+5. **It is logged (§3.18.5).** Every transfer *and every refusal* is written to
+   the audit log with the file name, sha256, byte count, direction and reason.
+6. **It arrives in the destination.** The file lands in
+   `~/diode-in/<source-env>/` in the receiving VM; the source copy is cleared.
+
+Configure it in `config.env` — for example, to allow pushing files *down* from
+the sensitive admin domain and from dev to office:
+
+```sh
+DIODES="administration>development administration>office development>office"
+DIODE_MAX_BYTES=8388608     # per-file ceiling (8 MiB)
+DIODE_SCAN=1                # optional §3.18.6 content vetting
+DIODE_SCAN_DENYLIST="CONFIDENTIEL SECRET"
+```
+
+Filenames are validated to a safe character set (a name from a possibly-hostile
+domain is never interpolated raw into a guest command), oversize files are
+refused, and a name collision in the destination is delivered under a
+timestamped name rather than overwriting. §3.18.7's stricter "dedicated,
+unprivileged support domain per diode" for the scanning step is a further
+hardening step (route `DIODE_SCAN` to a dedicated analysis VM); the built-in
+scan runs on the host.
 
 ## Getting it onto a machine
 
@@ -538,6 +595,8 @@ but you enable it (sometimes with a firmware/hardware setting).
 | Always know the active environment | Built-in | the always-visible, color-coded trust bar |
 | Network isolation, no impersonation between environments | Built-in | separate bridge + subnet per env, nftables all-pairs drop, continuously re-verified by `src/host/isolation-watch.sh` |
 | Per-environment outbound control | Built-in | `<env>_EGRESS_MODE=whitelist` |
+| Inter-domain exchange forbidden by default (§3.18) | Built-in | all-pairs DROP; nothing crosses unless a diode is explicitly configured |
+| Unidirectional, mediated, logged file diode (§3.18) | Opt-in | `DIODES="src>dst …"` + `src/environments/diode.sh`: host-mediated, per-file accept, sha256+direction logged, optional content scan |
 | Peripheral compartmentalization (USB) | Built-in | usbguard default-deny; whitelist with `src/host/usb-allow.sh`; YubiKey routed to one VM |
 | No secrets left at rest | Built-in | `src/environments/scrub-secrets.sh` blanks passwords/keys after setup |
 | Traceability of security events | Built-in | append-only audit log (`/var/log/appliance-audit.log`): isolation transitions, portal logins, USB routing, updates |

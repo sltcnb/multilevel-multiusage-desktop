@@ -44,5 +44,10 @@ new_sandbox
 "$SANDBOX/setup-machine.sh" </dev/null > "$SANDBOX/menu.out" 2>&1
 assert_contains "menu offers package update (step 9)" "$SANDBOX/menu.out" '9\) Update packages'
 assert_contains "menu offers secure erase (step 10)"  "$SANDBOX/menu.out" '10\) Secure erase'
+assert_contains "menu offers the file diode (step 11)" "$SANDBOX/menu.out" '11\) File diode'
+# Step 11 dispatches to diode.sh in direct mode, forwarding args. With no DIODES
+# configured (the harness default) it is a clean no-op — which proves the wiring.
+"$SANDBOX/setup-machine.sh" 11 --list > "$SANDBOX/diode-step.out" 2>&1
+assert_contains "step 11 runs the diode script" "$SANDBOX/diode-step.out" 'No diodes configured'
 
 summary

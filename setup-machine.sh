@@ -29,7 +29,7 @@ usage() {
   cat <<EOF
 Usage:
   ./setup-machine.sh            show the menu and pick a step
-  ./setup-machine.sh <n> [args] run step <n> directly (1-10, extra args forwarded)
+  ./setup-machine.sh <n> [args] run step <n> directly (1-11, extra args forwarded)
   ./setup-machine.sh -h         this help
 EOF
 }
@@ -54,6 +54,7 @@ show_menu() {
    8) Compliance check ........ src/host/compliance-check.sh
    9) Update packages + SBOM .. src/host/update-packages.sh
   10) Secure erase (EOL) ...... src/host/secure-erase.sh
+  11) File diode (PA-114 §3.18) src/environments/diode.sh [--list|--pair a>b]
 
  Locked out of a VM, or it has no desktop? Step 7 reads and
  repairs the guest's disk from the host — it needs neither a
@@ -83,6 +84,7 @@ run_step() {
     8) exec "$SRC/host/compliance-check.sh" "$@" ;;
     9) exec "$SRC/host/update-packages.sh" "$@" ;;
     10) exec "$SRC/host/secure-erase.sh" "$@" ;;
+    11) exec "$SRC/environments/diode.sh" "$@" ;;
     q|Q) exit 0 ;;
     *) echo "Unknown step: $step" >&2; exit 1 ;;
   esac
@@ -99,7 +101,7 @@ esac
 # Interactive menu. The line is word-split on purpose so "3 office" works here
 # exactly like `./setup-machine.sh 3 office` does.
 show_menu
-printf 'Step to run [1-10, q to quit]: '
+printf 'Step to run [1-11, q to quit]: '
 read -r choice || exit 0
 [ -n "$choice" ] || exit 0
 # shellcheck disable=SC2086  # intentional word split: "<step> [args...]"
