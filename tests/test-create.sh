@@ -187,6 +187,13 @@ assert_contains "the arch guest points ossec.conf at the manager" "$SANDBOX/wzar
 assert_contains "the arch guest registers its per-env agent name" "$SANDBOX/wzarch-ud.yaml" '<agent_name>nbuisson_dev</agent_name>'
 assert_contains "the arch guest joins the configured group" "$SANDBOX/wzarch-ud.yaml" '<groups>default</groups>'
 
+# Per-env hostname override -> the guest hostname (NetBird peer / Wazuh name follow it).
+new_sandbox
+cfg_set development_HOSTNAME "nbuisson-bastion"
+"$SANDBOX/src/environments.sh" create > "$SANDBOX/hn.out" 2>&1
+extract_userdata "$SANDBOX/images/development-seed.iso" "$SANDBOX/hn-ud.yaml"
+assert_contains "the per-env hostname override sets the guest hostname" "$SANDBOX/hn-ud.yaml" 'hostname: nbuisson-bastion'
+
 # --- NetBird mesh VPN enrolment ----------------------------------------------
 # apt path (office=ubuntu): signed repo + pinned-key check + `netbird up`.
 new_sandbox

@@ -400,6 +400,9 @@ administration_ENABLED=1; administration_OS="arch"; administration_DE="gnome"
   yourself; set `WINDOWS_ISO_SRC` (its path on the build host) to have `flash.sh`
   bake it into the image instead — that needs a larger `IMG_SIZE` (OS + ISO),
   `BAKE_CONFIG=1`, and a USB stick at least `IMG_SIZE`.
+- **Hostname** — `<env>_HOSTNAME` sets the guest's OS hostname (default = the env
+  name); it also becomes the NetBird peer name and the default Wazuh agent name,
+  so one knob names the machine everywhere.
 - **Desktop** — `<env>_DE` accepts `gnome`, `xfce4`, `kde`, `mate`, `lxqt`, or
   `none` for a CLI-only guest.
 - **Egress** — `<env>_EGRESS_MODE=all|whitelist` plus `<env>_EGRESS_ALLOW="ip ip"`.

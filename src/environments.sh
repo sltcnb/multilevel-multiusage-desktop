@@ -868,7 +868,7 @@ create_windows_vm() {
   log "Preparing empty disk for $name (${disk} GB, Windows 11) ..."
   run qemu-img create -f qcow2 "$vmdisk" "${disk}G"
 
-  unattend_iso="$(make_unattend_iso "$name" "$name")"
+  unattend_iso="$(make_unattend_iso "$name" "$host")"
 
   step "Windows 11 install for $name  (q35 + UEFI + vTPM, ${vcpu} vCPU, ${ram} MB, ${disk} GB)"
   # boot.order: the (empty) HDD is tried FIRST — it has no EFI entry yet, so UEFI
@@ -1129,7 +1129,7 @@ for_each_enabled_env | while read -r env idx; do
   base="$(os_base "$os")" || { warn "Unsupported OS '$os' for $env (use ubuntu|arch|debian); skipping."; continue; }
   create_vm "$env" "$(os_variant "$os")" "$(env_net "$env")" \
             "$(env_val "$env" VCPU 1)" "$(env_val "$env" RAM_MB 1024)" \
-            "$(env_val "$env" DISK_GB 10)" "$base" "$env"
+            "$(env_val "$env" DISK_GB 10)" "$base" "$(env_val "$env" HOSTNAME "$env")"
 done
 
 ok "All enabled VMs created."
