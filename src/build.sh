@@ -145,6 +145,7 @@ apk add -q \
   xkeyboard-config xkbcomp \
   eudev udev-init-scripts keyd keyd-openrc usbguard usbguard-openrc usbutils \
   xinit i3wm xterm ttf-dejavu \
+  adwaita-icon-theme hicolor-icon-theme \
   polybar jq font-jetbrains-mono-nerd \
   firefox-esr \
   xorriso \

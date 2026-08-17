@@ -215,6 +215,7 @@ elif [ "$PKG" = "apk" ]; then
     xkeyboard-config xkbcomp \
     eudev udev-init-scripts keyd keyd-openrc usbguard usbguard-openrc usbutils \
     xinit i3wm xterm ttf-dejavu \
+    adwaita-icon-theme hicolor-icon-theme \
     polybar jq font-jetbrains-mono-nerd \
     firefox-esr \
     xorriso \
@@ -235,7 +236,7 @@ else
     virtinst virt-viewer \
     ovmf swtpm \
     nftables wireguard-tools \
-    xserver-xorg xinit i3 fonts-dejavu \
+    xserver-xorg xinit i3 fonts-dejavu adwaita-icon-theme \
     cloud-image-utils genisoimage wget curl openssl
 fi
 
