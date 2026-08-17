@@ -378,6 +378,35 @@ alpine-make-vm-image \
   --script-chroot \
   "/work/appliance.raw" -- /work/profile.sh
 
+# ---- optionally bake a large binary (e.g. the Windows ISO) into the rootfs --
+# Too big for the base64-tar tree mechanism (the appliance scripts ride that; a
+# multi-GB ISO cannot). Copy it straight into the freshly built image's ext4
+# root via a loop mount — this container is privileged. The file then rides the
+# dd clone to the internal disk, and environments.sh create finds it at the
+# path in BAKE_ISO_DEST (== the guest's WINDOWS_ISO). Requires IMG_SIZE large
+# enough to hold the OS + the ISO with headroom.
+if [ -n "${BAKE_ISO:-}" ]; then
+  [ -f "$BAKE_ISO" ] || { echo "[x] BAKE_ISO=$BAKE_ISO not present in the container"; exit 1; }
+  echo "[*] Baking $(basename "$BAKE_ISO") into the image at ${BAKE_ISO_DEST} ..."
+  lodev="$(losetup --partscan --find --show /work/appliance.raw)"
+  partx -a "$lodev" 2>/dev/null || true
+  root_part=""
+  for _p in "${lodev}p2" "${lodev}p3" "${lodev}p1"; do
+    [ -b "$_p" ] || continue
+    [ "$(blkid -o value -s TYPE "$_p" 2>/dev/null)" = "ext4" ] && { root_part="$_p"; break; }
+  done
+  [ -n "$root_part" ] || { echo "[x] no ext4 root partition found to bake into"; losetup -d "$lodev"; exit 1; }
+  mkdir -p /mnt/imgroot
+  mount "$root_part" /mnt/imgroot
+  mkdir -p "/mnt/imgroot$(dirname "$BAKE_ISO_DEST")"
+  cp "$BAKE_ISO" "/mnt/imgroot$BAKE_ISO_DEST"
+  sync
+  umount /mnt/imgroot
+  partx -d "$lodev" 2>/dev/null || true
+  losetup -d "$lodev"
+  echo "[+] ISO baked ($(du -h "$BAKE_ISO" | cut -f1))."
+fi
+
 # Convert raw -> qcow2 for the final artifact.
 qemu-img convert -O qcow2 "/work/appliance.raw" "/work/$OUT_IMG"
 rm -f "/work/appliance.raw"
@@ -390,13 +419,35 @@ chmod +x "$OUT_DIR/_build_inside.sh"
 #    Mount ./out as /work so the finished qcow2 lands on the mac.
 # -----------------------------------------------------------------------------
 echo "[*] Building image in privileged Alpine container (needs Docker) ..."
+# WINDOWS_ISO_SRC (a path on THIS build host) opts into baking a large binary —
+# the Windows install ISO — into the image so it lands on the appliance with no
+# manual copy. It is bind-mounted read-only into the builder and copied into the
+# rootfs at WINDOWS_ISO (the guest's ISO path). Empty = don't bake (the operator
+# copies the ISO onto the box by hand). IMG_SIZE must be big enough (OS ~1.7G +
+# the ISO + headroom); the USB stick must be at least IMG_SIZE too.
+ISO_SRC="${WINDOWS_ISO_SRC:-}"
+if [ -n "$ISO_SRC" ]; then
+  [ -f "$ISO_SRC" ] || { echo "[x] WINDOWS_ISO_SRC=$ISO_SRC not found on the build host."; exit 1; }
+  ISO_DEST="${WINDOWS_ISO:-/opt/appliance/images/$(basename "$ISO_SRC")}"
+  ISO_BASE="$(basename "$ISO_DEST")"
+  echo "[*] Will bake $(basename "$ISO_SRC") -> $ISO_DEST (IMG_SIZE=$IMG_SIZE)."
+fi
 # --platform linux/amd64: the appliance is an x86_64 KVM host, so we build the
 # rootfs as amd64. On Apple Silicon this runs under emulation (slower) — that's
 # expected and correct for producing a bootable x86_64 image.
-docker run --rm --privileged --platform linux/amd64 \
-  -v "$OUT_DIR":/work \
-  "alpine:${ALPINE_BRANCH#v}" \
-  /work/_build_inside.sh "$ALPINE_BRANCH" "$IMG_SIZE" "$OUT_IMG" "$AMVI_REF"
+if [ -n "$ISO_SRC" ]; then
+  docker run --rm --privileged --platform linux/amd64 \
+    -v "$OUT_DIR":/work \
+    -v "$ISO_SRC":"/iso/$ISO_BASE":ro \
+    -e "BAKE_ISO=/iso/$ISO_BASE" -e "BAKE_ISO_DEST=$ISO_DEST" \
+    "alpine:${ALPINE_BRANCH#v}" \
+    /work/_build_inside.sh "$ALPINE_BRANCH" "$IMG_SIZE" "$OUT_IMG" "$AMVI_REF"
+else
+  docker run --rm --privileged --platform linux/amd64 \
+    -v "$OUT_DIR":/work \
+    "alpine:${ALPINE_BRANCH#v}" \
+    /work/_build_inside.sh "$ALPINE_BRANCH" "$IMG_SIZE" "$OUT_IMG" "$AMVI_REF"
+fi
 
 rm -f "$OUT_DIR/_build_inside.sh" "$OUT_DIR/profile.sh" "$OUT_DIR/appliance-tree.b64"
 

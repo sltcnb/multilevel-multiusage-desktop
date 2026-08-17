@@ -395,7 +395,11 @@ administration_ENABLED=1; administration_OS="arch"; administration_DE="gnome"
   needs `WINDOWS_ISO` set to a Windows 11 install ISO you supply — the repo
   cannot download or license Windows. It also wants more resources
   (`<env>_VCPU>=2`, `RAM_MB>=4096`, `DISK_GB>=64`). `virtio-win` and the SPICE
-  guest tools are fetched automatically.
+  guest tools are fetched automatically. The ISO is too big for the image's
+  script-baking mechanism, so by default you copy it to `WINDOWS_ISO` on the box
+  yourself; set `WINDOWS_ISO_SRC` (its path on the build host) to have `flash.sh`
+  bake it into the image instead — that needs a larger `IMG_SIZE` (OS + ISO),
+  `BAKE_CONFIG=1`, and a USB stick at least `IMG_SIZE`.
 - **Desktop** — `<env>_DE` accepts `gnome`, `xfce4`, `kde`, `mate`, `lxqt`, or
   `none` for a CLI-only guest.
 - **Egress** — `<env>_EGRESS_MODE=all|whitelist` plus `<env>_EGRESS_ALLOW="ip ip"`.

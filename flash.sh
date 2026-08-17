@@ -37,7 +37,9 @@ APP_ROOT="$HERE"  # common.sh assumes the caller lives under src/; we are the ro
 if [ -f "$HERE/config.env" ]; then
   # shellcheck disable=SC1091
   . "$HERE/config.env"
-  export IMG_SIZE ALPINE_BRANCH BAKE_CONFIG
+  # WINDOWS_ISO_SRC (build-host path) opts into baking the Windows ISO into the
+  # image; WINDOWS_ISO is where it lands on the guest. Both handed to the build.
+  export IMG_SIZE ALPINE_BRANCH BAKE_CONFIG WINDOWS_ISO_SRC WINDOWS_ISO
 fi
 
 OUT_DIR="${OUT_DIR:-$HERE/out}"
