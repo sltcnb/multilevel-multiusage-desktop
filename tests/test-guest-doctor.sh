@@ -110,7 +110,7 @@ new_sandbox
 "$SANDBOX/src/environments.sh" create >/dev/null 2>&1
 "$SANDBOX/src/environments.sh" guest-doctor office > "$SANDBOX/doctor.out" 2>&1
 assert_contains "the report names the environment" "$SANDBOX/doctor.out" '=== office'
-assert_contains "the report tells the operator how to fix a locked account" "$SANDBOX/doctor.out" 'guest-doctor.sh --password'
+assert_contains "the report tells the operator how to fix a locked account" "$SANDBOX/doctor.out" 'guest-doctor --password'
 
 # An env that was never created must say so rather than half-report.
 "$SANDBOX/src/environments.sh" guest-doctor nosuchenv > "$SANDBOX/doctor2.out" 2>&1

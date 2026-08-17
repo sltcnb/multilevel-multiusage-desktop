@@ -2260,7 +2260,7 @@ SD_SERVICE="/etc/systemd/system/appliance-isolation-watch.service"
 SD_TIMER="/etc/systemd/system/appliance-isolation-watch.timer"
 
 remove_timer() {
-  if [ -f "$CRONTAB" ] && grep -q 'isolation-watch\.sh' "$CRONTAB" 2>/dev/null; then
+  if [ -f "$CRONTAB" ] && grep -q 'isolation-watch' "$CRONTAB" 2>/dev/null; then
     _t="$CRONTAB.appliance.$$"
     ( umask 077; grep -v 'isolation-watch' "$CRONTAB" > "$_t" || true )
     mv -f "$_t" "$CRONTAB"

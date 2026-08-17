@@ -35,7 +35,7 @@ if [ -f /run/appliance/NONCOMPLIANT ]; then _g "--gate drops the boot-block mark
 # The operator menu offers it as step 8.
 "$SANDBOX/setup.sh" </dev/null > "$SANDBOX/menu.out" 2>&1
 assert_contains "the setup menu offers the compliance check (step 8)" "$SANDBOX/menu.out" '8\) Compliance check'
-assert_contains "running step 8 dispatches to compliance-check.sh"    "$SANDBOX/menu.out" 'compliance-check.sh'
+assert_contains "running step 8 dispatches to the compliance check"    "$SANDBOX/menu.out" 'host.sh compliance-check'
 
 # Read-only: it must not attempt any state-changing virsh verb.
 assert_not_contains "the check never mutates a domain" "$STUB_LOG" 'virsh (define|start|destroy|undefine|attach-device|detach-device)'
