@@ -278,7 +278,7 @@ require_secret() {
 # (passwords baked into VMs, PSK hashed, LUKS/VPN keys applied). Structural
 # config ($ENVS, per-env OS/DE/egress) is kept so scripts still work.
 scrub_secrets() {
-  for k in GUEST_PASSWORD WIFI_PSK LUKS_PASS HOST_ROOT_PASSWORD; do
+  for k in GUEST_PASSWORD WIFI_PSK LUKS_PASS HOST_ROOT_PASSWORD NETBIRD_SETUP_KEY; do
     grep -q "^${k}=" "$CONFIG_ENV" 2>/dev/null && set_kv "$k" ""
   done
   for _e in ${ENVS:-}; do

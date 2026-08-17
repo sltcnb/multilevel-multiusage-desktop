@@ -438,6 +438,15 @@ Don't bake secrets into a shipped image — set them on the appliance instead.
 - **development / administration → Wazuh.** Set `<env>_WAZUH=1` and `WAZUH_MANAGER`
   and those VMs auto-enroll the Wazuh agent for monitoring (apt on Ubuntu/Debian,
   AUR on Arch).
+- **development / administration → NetBird.** Set `<env>_NETBIRD=1` and
+  `NETBIRD_SETUP_KEY` (and `NETBIRD_MANAGEMENT_URL` for a self-hosted control
+  plane) and those VMs install the NetBird agent and join your mesh VPN on first
+  boot — apt via NetBird's signed repo (pin its key in `NETBIRD_GPG_FPR`, which
+  ships empty and fails closed until you set it), Arch via the AUR. NetBird runs
+  *inside* the guest over that domain's own uplink, so it never bridges the
+  isolated local VMs; the host's all-pairs drop is untouched. On a
+  whitelisted-egress domain (the default for `administration`) you must add
+  NetBird's endpoints to `<env>_EGRESS_ALLOW` or `netbird up` can't reach them.
 
 ## Users and privileges
 

@@ -176,6 +176,13 @@ mkdir -p "$IMAGES_DIR" "$CACHE_DIR"
 # was unreachable. With `-`, an explicit empty value survives and is refused.
 MS_GPG_FPR="${MS_GPG_FPR-BC528686B50D79E339D3721CEB3E94ADBE1229CF}"
 WAZUH_GPG_FPR="${WAZUH_GPG_FPR-0DCFCA5547B19D2A6099506096B3EE5F29111145}"
+# NetBird's apt signing key ships NO default on purpose: unlike Microsoft/Wazuh,
+# this repo does not vouch for a NetBird fingerprint it has not independently
+# verified. Obtain it out-of-band (NetBird's own docs / the key at
+# https://pkgs.netbird.io/debian/public.key over an independent path) and pin it
+# in config.env. Left empty, an apt guest with NETBIRD=1 fails closed via
+# require_pinned_fpr; Arch uses the AUR path, gated by the PKGBUILD's checksums.
+NETBIRD_GPG_FPR="${NETBIRD_GPG_FPR-}"
 
 # -----------------------------------------------------------------------------
 # Custom APT source (OPTIONAL — applies to apt-family guests: ubuntu/debian).
@@ -487,6 +494,36 @@ make_seed() {
   - sed -i 's|<address>.*</address>|<address>$wm</address>|' /var/ossec/etc/ossec.conf
   - systemctl enable --now wazuh-agent"
       log "$vm: Wazuh agent -> $wm (AUR, best-effort)."
+    fi
+  fi
+
+  # ---- NetBird mesh VPN auto-enroll (<env>_NETBIRD=1 + NETBIRD_SETUP_KEY) -----
+  # Installs the NetBird agent and joins the overlay with a setup key. apt guests
+  # via NetBird's signed apt repo (fingerprint-pinned like Wazuh); Arch via AUR
+  # (best-effort). NETBIRD_MANAGEMENT_URL is only for a SELF-HOSTED control plane;
+  # empty = NetBird's hosted service. This is in-guest egress over the domain's
+  # OWN uplink — it does not bridge the isolated local VMs, and the host all-pairs
+  # DROP is untouched. NOTE: a whitelisted egress (e.g. administration) must ALLOW
+  # NetBird's management/signal/relay endpoints or `netbird up` cannot connect.
+  nk="${NETBIRD_SETUP_KEY:-}"
+  nmu="${NETBIRD_MANAGEMENT_URL:-}"
+  nbmgmt=""; [ -n "$nmu" ] && nbmgmt=" --management-url $nmu"
+  if [ "$(env_val "$vm" NETBIRD 0)" = "1" ]; then
+    if [ -z "$nk" ]; then
+      warn "$vm: NETBIRD=1 but NETBIRD_SETUP_KEY is empty — skipping."
+    elif [ "$(os_family "$_os")" = "apt" ]; then
+      require_pinned_fpr NETBIRD_GPG_FPR "NetBird agent (NetBird repo key)"
+      de_runcmd_lines="$de_runcmd_lines
+  - sh -c 'set -e; t=\$(mktemp); curl -fsSL https://pkgs.netbird.io/debian/public.key -o \"\$t\"; f=\$(gpg --with-colons --import-options show-only --import \"\$t\" 2>/dev/null | grep \"^fpr\" | head -n1 | cut -f10 -d:); if [ \"\$f\" != \"$NETBIRD_GPG_FPR\" ]; then echo \"FATAL - NetBird GPG key fingerprint mismatch (got \$f, expected $NETBIRD_GPG_FPR) -- aborting, NetBird NOT installed.\" >&2; rm -f \"\$t\"; exit 1; fi; gpg --dearmor -o /usr/share/keyrings/netbird.gpg < \"\$t\"; rm -f \"\$t\"'
+  - sh -c '[ -s /usr/share/keyrings/netbird.gpg ] && echo \"deb [signed-by=/usr/share/keyrings/netbird.gpg] https://pkgs.netbird.io/debian stable main\" > /etc/apt/sources.list.d/netbird.list && apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y netbird && systemctl enable --now netbird && netbird up --setup-key \"$nk\"$nbmgmt'"
+      log "$vm: NetBird agent -> ${nmu:-app.netbird.io} (apt)."
+    else   # arch (AUR, best-effort)
+      de_runcmd_lines="$de_runcmd_lines
+  - pacman -Sy --noconfirm --needed base-devel git
+  - su - $GUEST_USER -c 'git clone https://aur.archlinux.org/netbird.git /tmp/nb && cd /tmp/nb && makepkg -si --noconfirm'
+  - systemctl enable --now netbird
+  - sh -c 'netbird up --setup-key \"$nk\"$nbmgmt'"
+      log "$vm: NetBird agent -> ${nmu:-app.netbird.io} (AUR, best-effort)."
     fi
   fi
 

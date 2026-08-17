@@ -171,6 +171,48 @@ assert_contains "the apt primary mirror is rewritten" "$SANDBOX/int-ud.yaml" 'ur
 extract_userdata "$SANDBOX/images/development-seed.iso" "$SANDBOX/int-dev.yaml"
 assert_not_contains "arch guests ignore the apt settings" "$SANDBOX/int-dev.yaml" 'apt:'
 
+# --- NetBird mesh VPN enrolment ----------------------------------------------
+# apt path (office=ubuntu): signed repo + pinned-key check + `netbird up`.
+new_sandbox
+cfg_set office_NETBIRD 1
+cfg_set NETBIRD_SETUP_KEY "nbkey-abc123"
+cfg_set NETBIRD_GPG_FPR "AAAABBBBCCCCDDDDEEEEFFFF0000111122223333"
+cfg_set NETBIRD_MANAGEMENT_URL "https://netbird.example.test:33073"
+"$SANDBOX/src/environments.sh" create > "$SANDBOX/nb.out" 2>&1
+extract_userdata "$SANDBOX/images/office-seed.iso" "$SANDBOX/nb-ud.yaml"
+assert_ok "user-data with NetBird on is valid YAML" yaml_ok "$SANDBOX/nb-ud.yaml"
+assert_contains "the NetBird apt repo is added" "$SANDBOX/nb-ud.yaml" 'pkgs.netbird.io/debian'
+assert_contains "the NetBird key fingerprint is verified before use" "$SANDBOX/nb-ud.yaml" 'AAAABBBBCCCCDDDDEEEEFFFF0000111122223333'
+assert_contains "a NetBird key mismatch aborts the install in-guest" "$SANDBOX/nb-ud.yaml" 'NetBird GPG key fingerprint mismatch'
+assert_contains "the guest joins the mesh with the setup key" "$SANDBOX/nb-ud.yaml" 'netbird up --setup-key'
+assert_contains "the setup key value is injected" "$SANDBOX/nb-ud.yaml" 'nbkey-abc123'
+assert_contains "a self-hosted management URL is passed through" "$SANDBOX/nb-ud.yaml" 'management-url https://netbird.example.test:33073'
+
+# apt path fails closed when the NetBird key fingerprint is blanked.
+new_sandbox
+cfg_set office_NETBIRD 1
+cfg_set NETBIRD_SETUP_KEY "nbkey-abc123"
+cfg_set NETBIRD_GPG_FPR ""
+assert_fails "a blanked NetBird key fingerprint refuses to build the seed" \
+  "$SANDBOX/src/environments.sh" create
+
+# NETBIRD=1 with no setup key is a skip (warned), never fatal.
+new_sandbox
+cfg_set office_NETBIRD 1
+"$SANDBOX/src/environments.sh" create > "$SANDBOX/nbskip.out" 2>&1
+extract_userdata "$SANDBOX/images/office-seed.iso" "$SANDBOX/nbskip-ud.yaml"
+assert_not_contains "no setup key means NetBird is not wired in" "$SANDBOX/nbskip-ud.yaml" 'netbird up'
+assert_contains "and the operator is told why it was skipped" "$SANDBOX/nbskip.out" 'NETBIRD=1 but NETBIRD_SETUP_KEY is empty'
+
+# arch path (development): AUR build + enrol, no apt fingerprint needed.
+new_sandbox
+cfg_set development_NETBIRD 1
+cfg_set NETBIRD_SETUP_KEY "nbkey-xyz789"
+"$SANDBOX/src/environments.sh" create > "$SANDBOX/nbarch.out" 2>&1
+extract_userdata "$SANDBOX/images/development-seed.iso" "$SANDBOX/nbarch-ud.yaml"
+assert_contains "the arch guest builds NetBird from the AUR" "$SANDBOX/nbarch-ud.yaml" 'aur.archlinux.org/netbird'
+assert_contains "the arch guest joins the mesh with the setup key" "$SANDBOX/nbarch-ud.yaml" 'netbird up --setup-key'
+
 # --- vendor GPG signature verification of base images -------------------------
 # These run REAL gpg (installed in the container) against a local "mirror":
 # gpg_lab() installs a test-local wget (prepended to PATH) that serves files
