@@ -79,7 +79,8 @@ assert_ok "the installer is a valid shell script" sh -n "$SANDBOX/office-de.sh"
 assert_ok "the arch installer is a valid shell script" sh -n "$SANDBOX/dev-de.sh"
 assert_contains "ubuntu+gnome installs the ubuntu desktop and gdm3" "$SANDBOX/office-de.sh" 'ubuntu-desktop-minimal gdm3'
 assert_contains "gdm3 gets an autologin drop-in" "$SANDBOX/office-ud.yaml" '/etc/gdm3/custom.conf'
-assert_contains "arch+xfce4 installs via pacman" "$SANDBOX/dev-de.sh" 'pacman -Sy --noconfirm --needed xorg xfce4'
+assert_contains "arch+xfce4 installs via pacman" "$SANDBOX/dev-de.sh" 'pacman -S --noconfirm --needed xorg xfce4'
+assert_contains "arch refreshes the keyring first (fixes stale-signature install failures)" "$SANDBOX/dev-de.sh" 'pacman -Sy --noconfirm --needed archlinux-keyring'
 assert_ok "lightdm gets an autologin drop-in" \
   wf_extract "$SANDBOX/dev-ud.yaml" /etc/lightdm/lightdm.conf.d/50-appliance-autologin.conf "$SANDBOX/dev-al.conf"
 assert_contains "lightdm autologs in the guest user" "$SANDBOX/dev-al.conf" 'autologin-user=operator'

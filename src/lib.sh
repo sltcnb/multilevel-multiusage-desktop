@@ -438,9 +438,18 @@ de_script() {
     _repair="dpkg --configure -a || true
 apt-get -f install -y || true"
   else
-    _install="pacman -Sy --noconfirm --needed $_pkgs"
-    _refresh="pacman -Sy --noconfirm"
-    _repair="rm -f /var/lib/pacman/db.lck || true"
+    # Arch cloud images ship a keyring frozen at image-build time; by the time a
+    # desktop is installed the repos have moved on and package signatures fail to
+    # verify ("unknown trust" / "invalid or corrupted package (PGP signature)") —
+    # the #1 reason plasma-meta install fails even WITH internet. So refresh the
+    # keyring (and re-init pacman-key) as part of the checked refresh step BEFORE
+    # installing. Each is a single command (the script runs them as `$_refresh` /
+    # `$_install`, so no && chaining here).
+    _install="pacman -S --noconfirm --needed $_pkgs"
+    _refresh="pacman -Sy --noconfirm --needed archlinux-keyring"
+    _repair="rm -f /var/lib/pacman/db.lck || true
+pacman-key --init >/dev/null 2>&1 || true
+pacman-key --populate archlinux >/dev/null 2>&1 || true"
   fi
 
   cat <<EOF

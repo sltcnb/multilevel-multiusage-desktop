@@ -90,8 +90,9 @@ new_sandbox
 sw_rc=$?
 assert_eq "switching.sh succeeds" 0 "$sw_rc"
 I3="$KH/.config/i3/config"
-assert_contains "Super+1 switches to the first env" "$I3" 'bindsym \$mod\+1 workspace number 1'
-assert_contains "Super+3 switches to the third env" "$I3" 'bindsym \$mod\+3 workspace number 3'
+# Switching is Ctrl+Alt+<n> (keyd, below X); Super/Meta is left to the guest
+# (Windows uses Super+1..9). So i3 must NOT bind Super+<n> for switching.
+assert_not_contains "Super+<n> is NOT bound for switching in i3 (left to the guest)" "$I3" 'bindsym \$mod\+1 workspace'
 assert_contains "each env's viewer is launched" "$I3" "vm-viewer.sh administration"
 assert_contains "the viewer is matched onto its numbered workspace" "$I3" 'move to workspace "2: DEVELOPMENT"'
 assert_contains "boot lands on the first enabled env" "$I3" 'i3-msg workspace number 1'
@@ -112,7 +113,8 @@ assert_contains "the clipboard does not cross security domains" "$KH/.config/vir
 # Hotkeys must be delivered by keyd (evdev, below X): SPICE grabs the X keyboard
 # whenever a guest is focused, which is the normal state of this kiosk, so an
 # i3-only bindsym never fires.
-assert_contains "keyd binds Super+1" /etc/keyd/default.conf 'meta\+1 = command\(/usr/local/bin/vmswitch 1\)'
+assert_contains "keyd binds Ctrl+Alt+1 to switch to env 1" /etc/keyd/default.conf 'control\+alt\+1 = command\(/usr/local/bin/vmswitch 1\)'
+assert_not_contains "Super+1 is NOT a keyd switch chord (left to the guest)" /etc/keyd/default.conf 'meta\+1 = command'
 assert_contains "keyd binds Super+Enter for the host shell" /etc/keyd/default.conf 'meta\+enter = command\(/usr/local/bin/vmswitch term\)'
 assert_contains "keyd binds Super+p for the captive portal" /etc/keyd/default.conf 'meta\+p = command\(/usr/local/bin/vmswitch portal\)'
 assert_contains "keyd binds Super+y for the USB chooser" /etc/keyd/default.conf 'meta\+y = command\(/usr/local/bin/vmswitch usb\)'
@@ -187,8 +189,8 @@ new_sandbox
 cfg_set development_ENABLED 0
 "$SANDBOX/src/host.sh" switching > /dev/null 2>&1
 assert_not_contains "a disabled env gets no viewer" "$I3" 'vm-viewer.sh development'
-assert_not_contains "a disabled env gets no hotkey" /etc/keyd/default.conf 'meta\+2 ='
-assert_contains "the remaining envs keep their numbers" /etc/keyd/default.conf 'meta\+3 = command\(/usr/local/bin/vmswitch 3\)'
+assert_not_contains "a disabled env gets no hotkey" /etc/keyd/default.conf 'control\+alt\+2 ='
+assert_contains "the remaining envs keep their numbers" /etc/keyd/default.conf 'control\+alt\+3 = command\(/usr/local/bin/vmswitch 3\)'
 
 # TRUST_BAR=0 is the documented alternative: true fullscreen, no bar.
 new_sandbox

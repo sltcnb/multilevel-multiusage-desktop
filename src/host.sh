@@ -893,8 +893,11 @@ for_each_enabled_env | while read -r env idx; do
   cat >> "$I3_DIR/config" <<EOF
 
 # --- $env (workspace $idx) ---
+# NOTE: no Super+<n> switch binding here on purpose. Super/Meta is left to the
+# guest (Windows uses Super+1..9 for the taskbar), and an i3 root-grab bind only
+# fires when a guest is NOT holding the keyboard grab anyway. VM switching is
+# Ctrl+Alt+<n>, delivered by keyd below X so it works even under the SPICE grab.
 for_window [class="(?i)virt-viewer" title="(?i)$env"] move to workspace "$idx: $label", border none
-bindsym \$mod+$idx workspace number $idx
 exec --no-startup-id sh -c 'exec ~/vm-viewer.sh $env'
 EOF
 done
@@ -1375,17 +1378,15 @@ esac >> "\$VMSW_LOG" 2>&1
 EOF
 chmod +x /usr/local/bin/vmswitch
 
-# Generate keyd bindings: meta+<idx> -> switch to that env's workspace, for every
-# ENABLED env. command() fires below X (works under the SPICE grab) and swallows
-# the chord. meta+enter = host shell.
+# Generate keyd bindings: Ctrl+Alt+<idx> -> switch to that env's workspace, for
+# every ENABLED env. command() fires below X (works under the SPICE grab) and
+# swallows the chord, so the switch works even while the guest holds the keyboard.
+# Super/Meta is deliberately NOT used for switching: it is left to the guest
+# (Windows uses Super+1..9 for the taskbar). Ctrl+Alt+<number row> is not a VT
+# switch (those are the F-keys), so it is safe to bind.
 {
   echo "[ids]"; echo "*"; echo; echo "[main]"
   for_each_enabled_env | while read -r env idx; do
-    echo "meta+$idx = command(/usr/local/bin/vmswitch $idx)"
-    # Alternate chord: Ctrl+Alt+<n>. Some keyboards/firmwares don't deliver a
-    # usable Super/meta, and Ctrl+Alt is also SPICE's cursor-release combo, so
-    # it is a natural, always-available second way to switch. Ctrl+Alt+<number
-    # row> is NOT a VT switch (those are the F-keys), so it is safe to bind.
     echo "control+alt+$idx = command(/usr/local/bin/vmswitch $idx)"
   done
   echo "meta+enter = command(/usr/local/bin/vmswitch term)"
