@@ -437,7 +437,9 @@ Don't bake secrets into a shipped image — set them on the appliance instead.
   blocked by Conditional Access, so the managed-Edge PWAs are the path that works).
 - **development / administration → Wazuh.** Set `<env>_WAZUH=1` and `WAZUH_MANAGER`
   and those VMs auto-enroll the Wazuh agent for monitoring (apt on Ubuntu/Debian,
-  AUR on Arch).
+  AUR on Arch). `WAZUH_AGENT_GROUP` sets the agent group and `<env>_WAZUH_NAME`
+  the registered name per environment (default = the guest hostname) — apt passes
+  them as Wazuh's install env vars, Arch writes them into `ossec.conf`.
 - **development / administration → NetBird.** Set `<env>_NETBIRD=1` and
   `NETBIRD_SETUP_KEY` (and `NETBIRD_MANAGEMENT_URL` for a self-hosted control
   plane) and those VMs install the NetBird agent and join your mesh VPN on first

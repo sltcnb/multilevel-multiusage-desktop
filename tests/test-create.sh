@@ -157,6 +157,8 @@ cfg_set office_INTUNE 1
 cfg_set office_MSAPPS 1
 cfg_set office_WAZUH 1
 cfg_set WAZUH_MANAGER "wazuh.example.test"
+cfg_set WAZUH_AGENT_GROUP "default"
+cfg_set office_WAZUH_NAME "office-agent"
 cfg_set APT_MIRROR "http://mirror.example.test/ubuntu"
 cfg_set APT_PROXY "http://10.10.1.1:3142"
 "$SANDBOX/src/environments.sh" create > "$SANDBOX/int.out" 2>&1
@@ -166,10 +168,24 @@ assert_contains "the Microsoft key fingerprint is verified before use" "$SANDBOX
 assert_contains "a key mismatch aborts the integration in-guest" "$SANDBOX/int-ud.yaml" 'fingerprint mismatch'
 assert_contains "Teams is installed as an Edge PWA" "$SANDBOX/int-ud.yaml" 'teams.microsoft.com'
 assert_contains "the Wazuh agent points at the configured manager" "$SANDBOX/int-ud.yaml" 'WAZUH_MANAGER=\\?"wazuh.example.test'
+assert_contains "the Wazuh agent group is passed (apt)" "$SANDBOX/int-ud.yaml" 'WAZUH_AGENT_GROUP=\\?"default'
+assert_contains "the Wazuh agent name is passed (apt)" "$SANDBOX/int-ud.yaml" 'WAZUH_AGENT_NAME=\\?"office-agent'
 assert_contains "the apt proxy is applied globally" "$SANDBOX/int-ud.yaml" 'proxy: "http://10.10.1.1:3142"'
 assert_contains "the apt primary mirror is rewritten" "$SANDBOX/int-ud.yaml" 'uri: "http://mirror.example.test/ubuntu"'
 extract_userdata "$SANDBOX/images/development-seed.iso" "$SANDBOX/int-dev.yaml"
 assert_not_contains "arch guests ignore the apt settings" "$SANDBOX/int-dev.yaml" 'apt:'
+
+# Wazuh group + per-env name on an Arch guest -> ossec.conf <enrollment> block.
+new_sandbox
+cfg_set development_WAZUH 1
+cfg_set WAZUH_MANAGER "wazuh.example.test"
+cfg_set WAZUH_AGENT_GROUP "default"
+cfg_set development_WAZUH_NAME "nbuisson_dev"
+"$SANDBOX/src/environments.sh" create > "$SANDBOX/wzarch.out" 2>&1
+extract_userdata "$SANDBOX/images/development-seed.iso" "$SANDBOX/wzarch-ud.yaml"
+assert_contains "the arch guest points ossec.conf at the manager" "$SANDBOX/wzarch-ud.yaml" '<address>wazuh.example.test</address>'
+assert_contains "the arch guest registers its per-env agent name" "$SANDBOX/wzarch-ud.yaml" '<agent_name>nbuisson_dev</agent_name>'
+assert_contains "the arch guest joins the configured group" "$SANDBOX/wzarch-ud.yaml" '<groups>default</groups>'
 
 # --- NetBird mesh VPN enrolment ----------------------------------------------
 # apt path (office=ubuntu): signed repo + pinned-key check + `netbird up`.

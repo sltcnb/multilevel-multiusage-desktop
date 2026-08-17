@@ -477,23 +477,39 @@ make_seed() {
   # ---- Wazuh agent auto-enroll (<env>_WAZUH=1 + WAZUH_MANAGER) ----------------
   # Installs + registers the Wazuh agent pointing at WAZUH_MANAGER. Ubuntu via the
   # Wazuh apt repo; Arch via AUR (best-effort, needs base-devel + network).
+  # WAZUH_AGENT_GROUP (global) and <env>_WAZUH_NAME (per-env; empty = the guest
+  # hostname) set the agent's group and its registered name. apt passes them as
+  # Wazuh's documented install env vars; Arch writes them into ossec.conf's
+  # <enrollment> block. wenv/wenr carry embedded quotes/XML on purpose.
   wm="${WAZUH_MANAGER:-}"
+  wg="${WAZUH_AGENT_GROUP:-}"
+  wn="$(env_val "$vm" WAZUH_NAME "")"
   if [ "$(env_val "$vm" WAZUH 0)" = "1" ]; then
     if [ -z "$wm" ]; then
       warn "$vm: WAZUH=1 but WAZUH_MANAGER is empty — skipping."
     elif [ "$(os_family "$_os")" = "apt" ]; then
       require_pinned_fpr WAZUH_GPG_FPR "Wazuh agent (Wazuh repo key)"
+      # shellcheck disable=SC2089
+      wenv="WAZUH_MANAGER=\"$wm\""
+      [ -n "$wg" ] && wenv="$wenv WAZUH_AGENT_GROUP=\"$wg\""
+      [ -n "$wn" ] && wenv="$wenv WAZUH_AGENT_NAME=\"$wn\""
       de_runcmd_lines="$de_runcmd_lines
   - sh -c 'set -e; t=\$(mktemp); curl -fsSL https://packages.wazuh.com/key/GPG-KEY-WAZUH -o \"\$t\"; f=\$(gpg --with-colons --import-options show-only --import \"\$t\" 2>/dev/null | grep \"^fpr\" | head -n1 | cut -f10 -d:); if [ \"\$f\" != \"$WAZUH_GPG_FPR\" ]; then echo \"FATAL - Wazuh GPG key fingerprint mismatch (got \$f, expected $WAZUH_GPG_FPR) -- aborting, Wazuh agent NOT installed.\" >&2; rm -f \"\$t\"; exit 1; fi; gpg --dearmor -o /usr/share/keyrings/wazuh.gpg < \"\$t\"; rm -f \"\$t\"'
-  - sh -c '[ -s /usr/share/keyrings/wazuh.gpg ] && echo \"deb [signed-by=/usr/share/keyrings/wazuh.gpg] https://packages.wazuh.com/4.x/apt/ stable main\" > /etc/apt/sources.list.d/wazuh.list && apt-get update && WAZUH_MANAGER=\"$wm\" DEBIAN_FRONTEND=noninteractive apt-get install -y wazuh-agent && systemctl enable --now wazuh-agent'"
-      log "$vm: Wazuh agent -> $wm (apt)."
+  - sh -c '[ -s /usr/share/keyrings/wazuh.gpg ] && echo \"deb [signed-by=/usr/share/keyrings/wazuh.gpg] https://packages.wazuh.com/4.x/apt/ stable main\" > /etc/apt/sources.list.d/wazuh.list && apt-get update && $wenv DEBIAN_FRONTEND=noninteractive apt-get install -y wazuh-agent && systemctl enable --now wazuh-agent'"
+      log "$vm: Wazuh agent -> $wm (apt${wg:+, group=$wg}${wn:+, name=$wn})."
     else   # arch (AUR, best-effort)
+      wenr=""
+      [ -n "$wn" ] && wenr="$wenr<agent_name>$wn</agent_name>"
+      [ -n "$wg" ] && wenr="$wenr<groups>$wg</groups>"
       de_runcmd_lines="$de_runcmd_lines
   - pacman -Sy --noconfirm --needed base-devel git
   - su - $GUEST_USER -c 'git clone https://aur.archlinux.org/wazuh-agent.git /tmp/wz && cd /tmp/wz && makepkg -si --noconfirm'
-  - sed -i 's|<address>.*</address>|<address>$wm</address>|' /var/ossec/etc/ossec.conf
+  - sed -i 's|<address>.*</address>|<address>$wm</address>|' /var/ossec/etc/ossec.conf"
+      [ -n "$wenr" ] && de_runcmd_lines="$de_runcmd_lines
+  - sed -i 's|<client>|<client><enrollment>$wenr</enrollment>|' /var/ossec/etc/ossec.conf"
+      de_runcmd_lines="$de_runcmd_lines
   - systemctl enable --now wazuh-agent"
-      log "$vm: Wazuh agent -> $wm (AUR, best-effort)."
+      log "$vm: Wazuh agent -> $wm (AUR, best-effort${wg:+, group=$wg}${wn:+, name=$wn})."
     fi
   fi
 
