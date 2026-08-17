@@ -218,7 +218,11 @@ assert_contains "the hardware MAC is pinned for the captive portal" /etc/wpa_sup
 # The control socket is group netdev so the unprivileged kiosk (Super+w) can add
 # networks with wpa_cli — not wheel, which would imply admin privilege.
 assert_contains "the wpa control socket is group netdev (kiosk-manageable)" /etc/wpa_supplicant/wpa_supplicant.conf 'ctrl_interface_group=netdev'
-assert_contains "the uplink is recorded for isolate.sh" "$SANDBOX/config.env" '^WAN_IFACE="wlan0"$'
+# wifi must NOT pin WAN_IFACE to the wlan: a Wi-Fi-configured host actually on
+# Ethernet would otherwise NAT the guests out a dead interface. It stays "auto"
+# so isolate re-detects the real default-route uplink each run.
+assert_contains "wifi leaves WAN_IFACE=auto (isolate detects the real uplink)" "$SANDBOX/config.env" '^WAN_IFACE="auto"$'
+assert_not_contains "wifi does not pin WAN_IFACE to the wlan" "$SANDBOX/config.env" '^WAN_IFACE="wlan0"$'
 "$SANDBOX/src/host.sh" wifi > /dev/null 2>&1
 assert_eq "re-running does not duplicate the interfaces stanza" \
   1 "$(grep -c '^auto wlan0$' /etc/network/interfaces)"

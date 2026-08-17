@@ -39,7 +39,7 @@ if [ -f "$HERE/config.env" ]; then
   . "$HERE/config.env"
   # WINDOWS_ISO_SRC (build-host path) opts into baking the Windows ISO into the
   # image; WINDOWS_ISO is where it lands on the guest. Both handed to the build.
-  export IMG_SIZE ALPINE_BRANCH BAKE_CONFIG WINDOWS_ISO_SRC WINDOWS_ISO
+  export IMG_SIZE ALPINE_BRANCH BAKE_CONFIG WINDOWS_ISO_SRC WINDOWS_ISO VIRTIO_WIN_SRC ARCH_IMG_SRC
 fi
 
 OUT_DIR="${OUT_DIR:-$HERE/out}"

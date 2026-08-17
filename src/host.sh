@@ -1397,6 +1397,16 @@ chmod +x /usr/local/bin/vmswitch
   echo "meta+y = command(/usr/local/bin/vmswitch usb)"
 } > /etc/keyd/default.conf
 
+# keyd creates its virtual keyboard via /dev/uinput — without the uinput module
+# keyd fails to start and NO switch hotkey fires on ANY environment. Load it now
+# and persist it across reboots (belt-and-suspenders with build.sh's
+# modules-load.d), then start keyd.
+modprobe uinput 2>/dev/null || true
+if [ -d /etc/modules-load.d ]; then
+  grep -qx uinput /etc/modules-load.d/keyd.conf 2>/dev/null || echo uinput > /etc/modules-load.d/keyd.conf
+fi
+[ -e /dev/uinput ] || warn "/dev/uinput is missing — the kernel has no uinput support; keyd (and the switch hotkeys) cannot work until it does."
+
 # Enable keyd (idempotent) AND confirm it is actually running — a keyd that is
 # installed but not started is the single most common reason the hotkeys "do
 # nothing", and silencing that with `|| true` hid it. Say so out loud instead.
@@ -1554,8 +1564,13 @@ if command -v ifup >/dev/null 2>&1; then
   ifup "$WIFI_IFACE" 2>/dev/null || warn "ifup failed; check dmesg / firmware."
 fi
 
-# Record the uplink so 05 uses it explicitly (belt-and-suspenders vs auto).
-set_kv WAN_IFACE "$WIFI_IFACE"
+# Deliberately DO NOT pin WAN_IFACE to the wlan here. A machine configured for
+# Wi-Fi but actually running on ETHERNET (very common) would then NAT the guests
+# out a dead wireless interface and they'd have no internet. isolate resolves the
+# real uplink itself from the default route (`ip route get 1.1.1.1`) whenever
+# WAN_IFACE is "auto" (the default) — Wi-Fi picks wlan, Ethernet picks eth. An
+# operator who wants to force one still sets WAN_IFACE explicitly in config.env;
+# wifi has no business overriding that.
 
 # -----------------------------------------------------------------------------
 # 7. Verify connectivity (best-effort).

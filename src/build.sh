@@ -218,6 +218,10 @@ mkdir -p /etc/modules-load.d
 cat > /etc/modules-load.d/keyboard.conf <<'KB'
 usbhid
 hid_generic
+# uinput: keyd creates its virtual keyboard through /dev/uinput. Without this
+# module keyd cannot start, so the global VM-switch hotkeys (Super/Ctrl+Alt +N)
+# fire on NO environment. Load it at every boot.
+uinput
 KB
 
 # 4c. /etc/default/grub — carries the kernel cmdline to the INSTALLED system.
@@ -385,27 +389,32 @@ alpine-make-vm-image \
 # dd clone to the internal disk, and environments.sh create finds it at the
 # path in BAKE_ISO_DEST (== the guest's WINDOWS_ISO). Requires IMG_SIZE large
 # enough to hold the OS + the ISO with headroom.
-if [ -n "${BAKE_ISO:-}" ]; then
-  [ -f "$BAKE_ISO" ] || { echo "[x] BAKE_ISO=$BAKE_ISO not present in the container"; exit 1; }
-  echo "[*] Baking $(basename "$BAKE_ISO") into the image at ${BAKE_ISO_DEST} ..."
+if [ "${BAKE_N:-0}" -gt 0 ] 2>/dev/null; then
+  echo "[*] Baking $BAKE_N file(s) into the image ..."
   # Attach ONLY the Linux root partition via a loop device at its byte offset,
   # read from the GPT (Linux-filesystem type GUID 0FC63DAF-...). This avoids
   # partition-node scanning (losetup --partscan / nbd pN nodes do not appear in
   # this container's kernel), which is why a whole-disk attach found no ext4.
   _start="$(sfdisk -d /work/appliance.raw | grep -i 'type=0FC63DAF' | sed 's/.*start=[[:space:]]*//; s/,.*//' | head -1)"
   [ -n "$_start" ] || { echo "[x] could not locate the Linux root partition in the GPT"; sfdisk -d /work/appliance.raw; exit 1; }
-  _off=$((_start * 512))
-  _lo="$(losetup --offset "$_off" --find --show /work/appliance.raw)"
+  _lo="$(losetup --offset "$((_start * 512))" --find --show /work/appliance.raw)"
   [ -n "$_lo" ] || { echo "[x] losetup --offset failed"; exit 1; }
   [ "$(blkid -o value -s TYPE "$_lo" 2>/dev/null)" = "ext4" ] || { echo "[x] partition at offset is not ext4"; losetup -d "$_lo"; exit 1; }
   mkdir -p /mnt/imgroot
   mount "$_lo" /mnt/imgroot
-  mkdir -p "/mnt/imgroot$(dirname "$BAKE_ISO_DEST")"
-  cp "$BAKE_ISO" "/mnt/imgroot$BAKE_ISO_DEST"
+  _i=1
+  while [ "$_i" -le "$BAKE_N" ]; do
+    eval "_src=\$BAKE_${_i}_SRC"; eval "_dest=\$BAKE_${_i}_DEST"
+    [ -f "$_src" ] || { echo "[x] bake source $_src missing in the container"; umount /mnt/imgroot; losetup -d "$_lo"; exit 1; }
+    echo "[*]   $(basename "$_dest") -> $_dest ($(du -h "$_src" | cut -f1))"
+    mkdir -p "/mnt/imgroot$(dirname "$_dest")"
+    cp "$_src" "/mnt/imgroot$_dest"
+    _i=$((_i + 1))
+  done
   sync
   umount /mnt/imgroot
   losetup -d "$_lo"
-  echo "[+] ISO baked ($(du -h "$BAKE_ISO" | cut -f1))."
+  echo "[+] Baked $BAKE_N file(s)."
 fi
 
 # Convert raw -> qcow2 for the final artifact.
@@ -420,35 +429,36 @@ chmod +x "$OUT_DIR/_build_inside.sh"
 #    Mount ./out as /work so the finished qcow2 lands on the mac.
 # -----------------------------------------------------------------------------
 echo "[*] Building image in privileged Alpine container (needs Docker) ..."
-# WINDOWS_ISO_SRC (a path on THIS build host) opts into baking a large binary —
-# the Windows install ISO — into the image so it lands on the appliance with no
-# manual copy. It is bind-mounted read-only into the builder and copied into the
-# rootfs at WINDOWS_ISO (the guest's ISO path). Empty = don't bake (the operator
-# copies the ISO onto the box by hand). IMG_SIZE must be big enough (OS ~1.7G +
-# the ISO + headroom); the USB stick must be at least IMG_SIZE too.
-ISO_SRC="${WINDOWS_ISO_SRC:-}"
-if [ -n "$ISO_SRC" ]; then
-  [ -f "$ISO_SRC" ] || { echo "[x] WINDOWS_ISO_SRC=$ISO_SRC not found on the build host."; exit 1; }
-  ISO_DEST="${WINDOWS_ISO:-/opt/appliance/images/$(basename "$ISO_SRC")}"
-  ISO_BASE="$(basename "$ISO_DEST")"
-  echo "[*] Will bake $(basename "$ISO_SRC") -> $ISO_DEST (IMG_SIZE=$IMG_SIZE)."
+# Optional large-binary bakes (build-host path -> guest path), so the appliance
+# boots with them already in place and downloads nothing at create time:
+#   WINDOWS_ISO_SRC -> WINDOWS_ISO (the guest's Windows install ISO)
+#   VIRTIO_WIN_SRC  -> /var/lib/libvirt/images/virtio-win.iso (Windows drivers/agent)
+#   ARCH_IMG_SRC    -> /var/lib/libvirt/images/base-arch.qcow2 (Arch base cloud image)
+# Each is bind-mounted read-only into the builder and copied into the rootfs.
+# IMG_SIZE must hold the OS + every baked file; the USB stick must be >= IMG_SIZE.
+# --platform linux/amd64: the appliance is x86_64; on Apple Silicon this emulates.
+set -- --rm --privileged --platform linux/amd64 -v "$OUT_DIR":/work
+_bn=0
+if [ -n "${WINDOWS_ISO_SRC:-}" ]; then
+  [ -f "$WINDOWS_ISO_SRC" ] || { echo "[x] WINDOWS_ISO_SRC not found on the build host: $WINDOWS_ISO_SRC"; exit 1; }
+  _bn=$((_bn + 1)); _d="${WINDOWS_ISO:-/opt/appliance/images/$(basename "$WINDOWS_ISO_SRC")}"
+  set -- "$@" -v "$WINDOWS_ISO_SRC:/bake/$_bn:ro" -e "BAKE_${_bn}_SRC=/bake/$_bn" -e "BAKE_${_bn}_DEST=$_d"
+  echo "[*] will bake $(basename "$WINDOWS_ISO_SRC") -> $_d"
 fi
-# --platform linux/amd64: the appliance is an x86_64 KVM host, so we build the
-# rootfs as amd64. On Apple Silicon this runs under emulation (slower) — that's
-# expected and correct for producing a bootable x86_64 image.
-if [ -n "$ISO_SRC" ]; then
-  docker run --rm --privileged --platform linux/amd64 \
-    -v "$OUT_DIR":/work \
-    -v "$ISO_SRC":"/iso/$ISO_BASE":ro \
-    -e "BAKE_ISO=/iso/$ISO_BASE" -e "BAKE_ISO_DEST=$ISO_DEST" \
-    "alpine:${ALPINE_BRANCH#v}" \
-    /work/_build_inside.sh "$ALPINE_BRANCH" "$IMG_SIZE" "$OUT_IMG" "$AMVI_REF"
-else
-  docker run --rm --privileged --platform linux/amd64 \
-    -v "$OUT_DIR":/work \
-    "alpine:${ALPINE_BRANCH#v}" \
-    /work/_build_inside.sh "$ALPINE_BRANCH" "$IMG_SIZE" "$OUT_IMG" "$AMVI_REF"
+if [ -n "${VIRTIO_WIN_SRC:-}" ]; then
+  [ -f "$VIRTIO_WIN_SRC" ] || { echo "[x] VIRTIO_WIN_SRC not found on the build host: $VIRTIO_WIN_SRC"; exit 1; }
+  _bn=$((_bn + 1))
+  set -- "$@" -v "$VIRTIO_WIN_SRC:/bake/$_bn:ro" -e "BAKE_${_bn}_SRC=/bake/$_bn" -e "BAKE_${_bn}_DEST=/var/lib/libvirt/images/virtio-win.iso"
+  echo "[*] will bake virtio-win.iso -> /var/lib/libvirt/images/virtio-win.iso"
 fi
+if [ -n "${ARCH_IMG_SRC:-}" ]; then
+  [ -f "$ARCH_IMG_SRC" ] || { echo "[x] ARCH_IMG_SRC not found on the build host: $ARCH_IMG_SRC"; exit 1; }
+  _bn=$((_bn + 1))
+  set -- "$@" -v "$ARCH_IMG_SRC:/bake/$_bn:ro" -e "BAKE_${_bn}_SRC=/bake/$_bn" -e "BAKE_${_bn}_DEST=/var/lib/libvirt/images/base-arch.qcow2"
+  echo "[*] will bake base-arch.qcow2 -> /var/lib/libvirt/images/base-arch.qcow2"
+fi
+set -- "$@" -e "BAKE_N=$_bn" "alpine:${ALPINE_BRANCH#v}" /work/_build_inside.sh "$ALPINE_BRANCH" "$IMG_SIZE" "$OUT_IMG" "$AMVI_REF"
+docker run "$@"
 
 rm -f "$OUT_DIR/_build_inside.sh" "$OUT_DIR/profile.sh" "$OUT_DIR/appliance-tree.b64"
 
