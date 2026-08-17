@@ -5,31 +5,34 @@ set -u
 . "$(dirname "$0")/lib.sh"
 . "$(dirname "$0")/harness.sh"
 
-echo "== setup-machine.sh =="
+echo "== setup.sh =="
 new_sandbox
-# With no arguments setup-machine.sh prints the menu and waits for a choice;
+# With no arguments setup.sh prints the menu and waits for a choice;
 # EOF on stdin (the </dev/null here) just exits after printing it.
-"$SANDBOX/setup-machine.sh" </dev/null > "$SANDBOX/menu.out" 2>&1
+"$SANDBOX/setup.sh" </dev/null > "$SANDBOX/menu.out" 2>&1
 assert_contains "the menu lists the first-run steps in order" "$SANDBOX/menu.out" '1\) Create the VMs'
 assert_contains "the menu states the ordering rule that matters" "$SANDBOX/menu.out" 'First run order'
 assert_not_contains "first-boot steps (Wi-Fi) are NOT re-offered" "$SANDBOX/menu.out" 'Wi-Fi uplink'
-assert_fails "an unknown step is rejected" "$SANDBOX/setup-machine.sh" 99
-# Extra words on the line are forwarded, so "3 office" targets one env.
-cat > "$SANDBOX/environments/set-guest-password.sh" <<'EOF'
+assert_fails "an unknown step is rejected" "$SANDBOX/setup.sh" 99
+# Extra words on the line are forwarded, so "3 office" targets one env. setup.sh
+# now execs the dispatcher (`environments.sh set-guest-password office`), so the
+# stub replaces the dispatcher and drops the leading subcommand before echoing.
+cat > "$SANDBOX/src/environments.sh" <<'EOF'
 #!/bin/sh
+shift 2>/dev/null || true   # drop the dispatcher subcommand (set-guest-password)
 echo "ARGS:$*"
 EOF
-chmod +x "$SANDBOX/environments/set-guest-password.sh"
+chmod +x "$SANDBOX/src/environments.sh"
 assert_eq "arguments are forwarded to the step (direct mode)" \
-  "ARGS:office" "$("$SANDBOX/setup-machine.sh" 3 office 2>&1)"
+  "ARGS:office" "$("$SANDBOX/setup.sh" 3 office 2>&1)"
 assert_eq "arguments are forwarded to the step (menu mode)" \
-  "ARGS:office" "$(printf '3 office\n' | "$SANDBOX/setup-machine.sh" 2>&1 | tail -1 | sed 's/.*q to quit\]: //')"
+  "ARGS:office" "$(printf '3 office\n' | "$SANDBOX/setup.sh" 2>&1 | tail -1 | sed 's/.*q to quit\]: //')"
 
 echo
 echo "== host/usb-to-vm.sh =="
 new_sandbox
 touch "$SANDBOX/stub-state/dom-office" "$SANDBOX/stub-state/dom-development" "$SANDBOX/stub-state/dom-administration"
-printf '2\n' | "$SANDBOX/host/usb-to-vm.sh" > "$SANDBOX/usb.out" 2>&1
+printf '2\n' | "$SANDBOX/src/host.sh" usb-to-vm > "$SANDBOX/usb.out" 2>&1
 assert_contains "the chooser lists every environment" "$SANDBOX/usb.out" '2) development'
 assert_contains "the key is attached to the chosen env" "$STUB_LOG" 'virsh attach-device development'
 # ANSSI peripheral compartmentalisation: never shared across environments.
@@ -40,10 +43,10 @@ assert_not_contains "it is not detached from the env it was just given to" "$STU
 # A non-numeric choice used to index an awk field and silently detach everywhere.
 new_sandbox
 touch "$SANDBOX/stub-state/dom-office"
-printf 'x\n' | "$SANDBOX/host/usb-to-vm.sh" > "$SANDBOX/usbbad.out" 2>&1
+printf 'x\n' | "$SANDBOX/src/host.sh" usb-to-vm > "$SANDBOX/usbbad.out" 2>&1
 assert_contains "a non-numeric choice is rejected" "$SANDBOX/usbbad.out" 'invalid choice'
 assert_not_contains "and detaches nothing" "$STUB_LOG" 'detach-device'
-printf '9\n' | "$SANDBOX/host/usb-to-vm.sh" > "$SANDBOX/usbrange.out" 2>&1
+printf '9\n' | "$SANDBOX/src/host.sh" usb-to-vm > "$SANDBOX/usbrange.out" 2>&1
 assert_contains "an out-of-range choice is rejected" "$SANDBOX/usbrange.out" 'invalid choice'
 
 # The Super+y path runs as the kiosk user, which cannot read the 0600 config.
@@ -57,7 +60,7 @@ if id kiosk >/dev/null 2>&1; then
   # With config.env out of reach the env list comes from libvirt instead, so the
   # order is libvirt's — what matters is that the chooser runs and routes the key
   # rather than dying on an unreadable config.
-  out="$(printf '1\n' | su kiosk -s /bin/sh -c "PATH='$PATH' STUB_LOG='$STUB_LOG' STUB_STATE='$STUB_STATE' '$SANDBOX/host/usb-to-vm.sh'" 2>&1)"
+  out="$(printf '1\n' | su kiosk -s /bin/sh -c "PATH='$PATH' STUB_LOG='$STUB_LOG' STUB_STATE='$STUB_STATE' '$SANDBOX/src/host.sh' usb-to-vm" 2>&1)"
   case "$out" in
     *"YubiKey 1050:0407 -> "*) _g "the chooser still works for the kiosk user (config.env unreadable)" ;;
     *) _b "the chooser still works for the kiosk user (config.env unreadable)"
@@ -71,24 +74,24 @@ echo
 echo "== environments/set-guest-password.sh =="
 new_sandbox
 touch "$SANDBOX/stub-state/dom-office" "$SANDBOX/stub-state/dom-development" "$SANDBOX/stub-state/dom-administration"
-"$SANDBOX/environments/set-guest-password.sh" all 'NewPw!23' > "$SANDBOX/pw.out" 2>&1
+"$SANDBOX/src/environments.sh" set-guest-password all 'NewPw!23' > "$SANDBOX/pw.out" 2>&1
 assert_eq "changing every env's password succeeds" 0 "$?"
 assert_contains "the guest account is changed" "$STUB_LOG" 'virsh set-user-password office operator NewPw!23'
 assert_contains "root inside the guest is changed too by default" "$STUB_LOG" 'virsh set-user-password office root NewPw!23'
 : > "$STUB_LOG"
-NO_ROOT=1 "$SANDBOX/environments/set-guest-password.sh" office 'OnlyUser1' > /dev/null 2>&1
+NO_ROOT=1 "$SANDBOX/src/environments.sh" set-guest-password office 'OnlyUser1' > /dev/null 2>&1
 assert_contains "NO_ROOT=1 changes only the guest account" "$STUB_LOG" 'set-user-password office operator OnlyUser1'
 assert_not_contains "NO_ROOT=1 leaves root alone" "$STUB_LOG" 'set-user-password office root'
 assert_fails "an empty password is refused" \
-  sh -c "printf '\n' | '$SANDBOX/environments/set-guest-password.sh' office"
+  sh -c "printf '\n' | '$SANDBOX/src/environments.sh' set-guest-password office"
 new_sandbox
 assert_fails "a missing domain is reported as a failure" \
-  "$SANDBOX/environments/set-guest-password.sh" office 'x'
+  "$SANDBOX/src/environments.sh" set-guest-password office 'x'
 
 echo
 echo "== environments/vpn.sh =="
 new_sandbox
-"$SANDBOX/environments/vpn.sh" > "$SANDBOX/vpn-noop.out" 2>&1
+"$SANDBOX/src/environments.sh" vpn > "$SANDBOX/vpn-noop.out" 2>&1
 assert_eq "no env has VPN=1 — clean no-op" 0 "$?"
 assert_contains "and says so" "$SANDBOX/vpn-noop.out" 'per-env VPN disabled'
 
@@ -100,7 +103,7 @@ cfg_set administration_VPN_PUBKEY "cGVlcnB1YmtleXBlZXJwdWJrZXlwZWVycHVia2V5MTI="
 cfg_set administration_VPN_ENDPOINT "vpn.example.test:51820"
 rm -rf /etc/nftables.d
 nft flush ruleset 2>/dev/null || true
-"$SANDBOX/environments/vpn.sh" > "$SANDBOX/vpn.out" 2>&1
+"$SANDBOX/src/environments.sh" vpn > "$SANDBOX/vpn.out" 2>&1
 vpn_rc=$?
 assert_eq "vpn.sh succeeds" 0 "$vpn_rc"
 assert_ok "the VPN ruleset loads into a real kernel nftables" nft -f /etc/nftables.d/appliance-vpn.nft
@@ -124,7 +127,7 @@ else
 fi
 new_sandbox
 cfg_set administration_VPN 1     # VPN=1 but no keys
-"$SANDBOX/environments/vpn.sh" > "$SANDBOX/vpn-incomplete.out" 2>&1
+"$SANDBOX/src/environments.sh" vpn > "$SANDBOX/vpn-incomplete.out" 2>&1
 assert_contains "an incomplete VPN config is skipped with a warning" "$SANDBOX/vpn-incomplete.out" 'missing PRIVKEY/ADDRESS/PUBKEY/ENDPOINT'
 nft flush ruleset 2>/dev/null || true
 
@@ -138,7 +141,7 @@ for e in office development administration; do
     "$SANDBOX" "$e" "$SANDBOX" "$e" > "$SANDBOX/stub-state/blk-$e"
 done
 printf 'GUEST_PASSWORD=secret\n' > /root/generated-secrets.txt
-SCRUB_SEEDS=1 "$SANDBOX/environments/scrub-secrets.sh" > "$SANDBOX/scrub.out" 2>&1
+SCRUB_SEEDS=1 "$SANDBOX/src/environments.sh" scrub-secrets > "$SANDBOX/scrub.out" 2>&1
 assert_eq "scrub-secrets.sh succeeds" 0 "$?"
 assert_contains "the guest password is blanked" "$SANDBOX/config.env" '^GUEST_PASSWORD=""$'
 assert_contains "the Wi-Fi PSK is blanked" "$SANDBOX/config.env" '^WIFI_PSK=""$'
@@ -165,7 +168,7 @@ mkdir -p "$SANDBOX/images"
 touch "$SANDBOX/stub-state/dom-office" "$SANDBOX/images/office-seed.iso"
 printf ' sda      %s/images/office-seed.iso\n' "$SANDBOX" > "$SANDBOX/stub-state/blk-office"
 cfg_set ENVS "office"
-SCRUB_SEEDS=1 STUB_DETACH_FAIL=1 "$SANDBOX/environments/scrub-secrets.sh" > "$SANDBOX/scrubfail.out" 2>&1
+SCRUB_SEEDS=1 STUB_DETACH_FAIL=1 "$SANDBOX/src/environments.sh" scrub-secrets > "$SANDBOX/scrubfail.out" 2>&1
 assert_contains "a failed detach is reported" "$SANDBOX/scrubfail.out" 'could not detach seed cdrom'
 if [ -f "$SANDBOX/images/office-seed.iso" ]; then
   _g "a seed that is still referenced is left in place"

@@ -11,7 +11,7 @@ echo "== host/secure-erase.sh (guard) =="
 new_sandbox
 # Plant a fake VM disk; a DRY RUN (no CONFIRM) must NOT touch it.
 : > "$SANDBOX/images/office.qcow2"
-"$SANDBOX/host/secure-erase.sh" --vms > "$SANDBOX/erase.out" 2>&1; rc=$?
+"$SANDBOX/src/host.sh" secure-erase --vms > "$SANDBOX/erase.out" 2>&1; rc=$?
 assert_eq  "dry run (no CONFIRM) exits 0"                "0" "$rc"
 assert_contains "it announces a DRY RUN"                 "$SANDBOX/erase.out" 'DRY RUN'
 assert_contains "it only says what it WOULD erase"       "$SANDBOX/erase.out" 'WOULD'
@@ -26,7 +26,7 @@ assert_not_contains "no live shred/erase happened" "$STUB_LOG" 'cryptsetup erase
 echo
 echo "== host/update-packages.sh (SBOM) =="
 new_sandbox
-"$SANDBOX/host/update-packages.sh" --sbom-only > "$SANDBOX/pkg.out" 2>&1; rc=$?
+"$SANDBOX/src/host.sh" update-packages --sbom-only > "$SANDBOX/pkg.out" 2>&1; rc=$?
 assert_eq "sbom-only exits 0" "0" "$rc"
 # It must produce a bill of materials with a host section. The path is fixed
 # (/var/lib/appliance-sbom); grab the newest one this run just wrote.
@@ -39,15 +39,15 @@ else
 fi
 
 echo
-echo "== setup-machine.sh wiring =="
+echo "== setup.sh wiring =="
 new_sandbox
-"$SANDBOX/setup-machine.sh" </dev/null > "$SANDBOX/menu.out" 2>&1
+"$SANDBOX/setup.sh" </dev/null > "$SANDBOX/menu.out" 2>&1
 assert_contains "menu offers package update (step 9)" "$SANDBOX/menu.out" '9\) Update packages'
 assert_contains "menu offers secure erase (step 10)"  "$SANDBOX/menu.out" '10\) Secure erase'
 assert_contains "menu offers the file diode (step 11)" "$SANDBOX/menu.out" '11\) File diode'
 # Step 11 dispatches to diode.sh in direct mode, forwarding args. With no DIODES
 # configured (the harness default) it is a clean no-op — which proves the wiring.
-"$SANDBOX/setup-machine.sh" 11 --list > "$SANDBOX/diode-step.out" 2>&1
+"$SANDBOX/setup.sh" 11 --list > "$SANDBOX/diode-step.out" 2>&1
 assert_contains "step 11 runs the diode script" "$SANDBOX/diode-step.out" 'No diodes configured'
 
 summary

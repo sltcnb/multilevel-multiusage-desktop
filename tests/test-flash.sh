@@ -1,7 +1,7 @@
 #!/bin/sh
-# tests/test-flash-image.sh — the build+flash entry point (flash-image.sh).
+# tests/test-flash.sh — the build+flash entry point (flash.sh).
 #
-# flash-image.sh runs on the BUILD host and dd's onto a real disk, so the tests
+# flash.sh runs on the BUILD host and dd's onto a real disk, so the tests
 # run it against a staged tree with every dangerous command (qemu-img, lsblk,
 # findmnt, umount, dd) replaced by a stub that only logs its arguments. The
 # point of the suite is the SAFETY contract: the system disk and unknown disks
@@ -10,15 +10,15 @@ set -u
 . "$(dirname "$0")/lib.sh"
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
-echo "== flash-image.sh =="
+echo "== flash.sh =="
 
 # stage — throwaway tree: the script, the library it sources, a fake built
 # image, and a bin/ of stubs that shadows the real disk tools.
 stage() {
   STAGE="$(mktemp -d)"
-  mkdir -p "$STAGE/src/lib" "$STAGE/out" "$STAGE/bin"
-  cp "$REPO_ROOT/src/lib/common.sh" "$STAGE/src/lib/common.sh"
-  cp "$REPO_ROOT/flash-image.sh" "$STAGE/flash-image.sh"
+  mkdir -p "$STAGE/src" "$STAGE/out" "$STAGE/bin"
+  cp "$REPO_ROOT/src/lib.sh" "$STAGE/src/lib.sh"
+  cp "$REPO_ROOT/flash.sh" "$STAGE/flash.sh"
   printf 'FAKE-QCOW2\n' > "$STAGE/out/appliance-alpine.qcow2"
   STUB_LOG="$STAGE/stub.log"; : > "$STUB_LOG"
 
@@ -60,12 +60,12 @@ EOF
 
 run_flash() { # run_flash <answers-file> [args...]
   _answers="$1"; shift
-  OUT_DIR="$STAGE/out" sh "$STAGE/flash-image.sh" "$@" < "$_answers" > "$STAGE/run.out" 2>&1
+  OUT_DIR="$STAGE/out" sh "$STAGE/flash.sh" "$@" < "$_answers" > "$STAGE/run.out" 2>&1
 }
 
 stage
-assert_ok "--help exits 0" sh "$STAGE/flash-image.sh" --help
-assert_fails "an unknown flag is rejected" sh "$STAGE/flash-image.sh" --bogus
+assert_ok "--help exits 0" sh "$STAGE/flash.sh" --help
+assert_fails "an unknown flag is rejected" sh "$STAGE/flash.sh" --bogus
 
 # --- --image-only: build reuse + convert, no flash -------------------------------
 stage

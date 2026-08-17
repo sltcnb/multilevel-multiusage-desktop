@@ -1,17 +1,23 @@
 #!/bin/sh
 # =============================================================================
-# setup-image.sh — first-run wizard: fresh git clone -> bootable appliance image
+# configure.sh — step 1 of 3: write the appliance's config.env
 # -----------------------------------------------------------------------------
-# A zero-dependency, fully interactive walkthrough for a FIRST-TIME user (no
-# prior knowledge of the appliance assumed). It asks plain-language questions,
-# writes the answers to ./config.env (mode 0600), and offers to run
-# src/build/make-image.sh to produce the bootable qcow2.
+# The FIRST of three endpoints, in order:
+#   1. ./configure.sh   (this script) — answer questions, write config.env
+#   2. ./flash.sh                      — build the image and flash a USB stick
+#   3. ./setup.sh                      — on the appliance: create + isolate VMs
 #
-#   ./setup-image.sh              # interactive wizard
-#   ./setup-image.sh --defaults   # write config.env from built-in defaults,
-#                                 # no questions (CI/tests). An existing
-#                                 # config.env is backed up, never clobbered.
-#   ./setup-image.sh -h|--help    # usage
+# A zero-dependency, fully interactive walkthrough for a FIRST-TIME user (no
+# prior knowledge of the appliance assumed). It asks plain-language questions
+# and writes the answers to ./config.env (mode 0600) — and NOTHING else. It
+# never builds or flashes: that is ./flash.sh's job (strict separation, so each
+# endpoint does exactly one thing).
+#
+#   ./configure.sh              # interactive wizard
+#   ./configure.sh --defaults   # write config.env from built-in defaults,
+#                               # no questions (CI/tests). An existing
+#                               # config.env is backed up, never clobbered.
+#   ./configure.sh -h|--help    # usage
 #
 # Runs on the BUILD host (macOS bash 3.2 AND Linux), so: strictly POSIX sh.
 # Every prompt reads stdin with `read -r` and treats an empty answer (or EOF,
@@ -32,18 +38,18 @@
 set -eu
 
 # This script lives at the REPO ROOT, one level ABOVE src/ where every other
-# script lives. src/lib/common.sh derives APP_ROOT/CONFIG_ENV from the calling
+# script lives. src/lib.sh derives APP_ROOT/CONFIG_ENV from the calling
 # script's location assuming the caller is inside src/ — so after sourcing we
 # re-point both at the real root. (log/ok/warn/die are what we actually want
 # from the library.)
 HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck disable=SC1091
-. "$HERE/src/lib/common.sh"
+. "$HERE/src/lib.sh"
 APP_ROOT="$HERE"
 CONFIG_ENV="$HERE/config.env"
 
 # The three environments are FIXED and ordered: position in $ENVS fixes each
-# env's workspace number, subnet and bridge (see src/lib/common.sh), so the wizard
+# env's workspace number, subnet and bridge (see src/lib.sh), so the wizard
 # only ever toggles <env>_ENABLED — it never reorders or renames this list.
 ENVS="office development administration"
 
@@ -137,7 +143,7 @@ TMP_FILE=""
 cleanup() { [ -n "$TMP_FILE" ] && rm -f "$TMP_FILE" 2>/dev/null; return 0; }
 on_int() {
   printf '\n' >&2
-  warn "Interrupted (Ctrl+C) — config.env was NOT written. Re-run ./setup-image.sh any time."
+  warn "Interrupted (Ctrl+C) — config.env was NOT written. Re-run ./configure.sh any time."
   exit 130
 }
 trap on_int INT TERM
@@ -145,12 +151,11 @@ trap cleanup EXIT
 
 usage() {
   cat <<'EOF'
-Usage: ./setup-image.sh [--defaults] [-h|--help]
+Usage: ./configure.sh [--defaults] [-h|--help]
 
-Interactive first-run wizard: fresh git clone -> finished bootable appliance
-image. Asks about environments, credentials, Wi-Fi, security toggles, base
-image pinning and build options, then writes ./config.env (0600) and offers
-to run src/build/make-image.sh.
+Step 1 of 3. Interactive first-run wizard: asks about environments, credentials,
+Wi-Fi, security toggles, base-image pinning and build options, then writes
+./config.env (0600). It does not build or flash — run ./flash.sh next.
 
   --defaults   write config.env from the built-in defaults without asking
                (CI/tests; an existing config.env is backed up first)
@@ -166,13 +171,13 @@ preflight() {
   # a privileged Alpine container (macOS has neither loop devices nor the Linux
   # tooling to build one natively). Everything below it is advisory.
   if ! command -v docker >/dev/null 2>&1; then
-    warn "docker is not installed — src/build/make-image.sh cannot run without it."
+    warn "docker is not installed — src/build.sh cannot run without it."
     ask_yn PF_Q "Continue anyway (write config.env only, build later)?" 0
-    [ "$PF_Q" = "1" ] || die "Install Docker (Docker Desktop on macOS), then re-run ./setup-image.sh."
+    [ "$PF_Q" = "1" ] || die "Install Docker (Docker Desktop on macOS), then re-run ./configure.sh."
   elif ! docker info >/dev/null 2>&1; then
     warn "the Docker daemon is not reachable — is Docker Desktop started?"
     ask_yn PF_Q "Continue anyway (write config.env only, build later)?" 0
-    [ "$PF_Q" = "1" ] || die "Start the Docker daemon, then re-run ./setup-image.sh."
+    [ "$PF_Q" = "1" ] || die "Start the Docker daemon, then re-run ./configure.sh."
   else
     ok "docker is installed and running."
   fi
@@ -182,7 +187,7 @@ preflight() {
   if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
     warn "neither curl nor wget found — you will want one to fetch vendor checksums for image pinning."
     ask_yn PF_Q "Continue anyway?" 1
-    [ "$PF_Q" = "1" ] || die "Install curl or wget, then re-run ./setup-image.sh."
+    [ "$PF_Q" = "1" ] || die "Install curl or wget, then re-run ./configure.sh."
   fi
   # Disk: IMG_SIZE qcow2 + the raw intermediate + Docker layers. 20 GB is a
   # comfortable floor, not a hard limit — so a low disk warns, not aborts.
@@ -195,7 +200,7 @@ preflight() {
       if [ "$_free_kb" -lt 20971520 ]; then
         warn "less than 20 GB free on this disk — the build needs roughly that for the image + Docker layers."
         ask_yn PF_Q "Continue anyway?" 1
-        [ "$PF_Q" = "1" ] || die "Free some disk space, then re-run ./setup-image.sh."
+        [ "$PF_Q" = "1" ] || die "Free some disk space, then re-run ./configure.sh."
       else
         ok "disk space looks sufficient."
       fi ;;
@@ -299,7 +304,7 @@ ask_credentials() {
 ask_network() {
   log "Step 3/6 — network (host Wi-Fi uplink)"
   echo "  Wi-Fi for the appliance's OWN internet uplink. Optional: leave the SSID"
-  echo "  empty and configure it later on the appliance (src/host/wifi.sh); a wired"
+  echo "  empty and configure it later on the appliance (src/host.sh wifi); a wired"
   echo "  Ethernet connection needs nothing here."
   ask WIFI_SSID "Wi-Fi network name (SSID), empty = wired/skip?" "$WIFI_SSID"
   if [ -n "$WIFI_SSID" ]; then
@@ -457,10 +462,10 @@ write_config() {
   ( umask 077
     {
       cat <<EOF
-# config.env — generated by setup-image.sh on $(date '+%Y-%m-%d %H:%M:%S')
+# config.env — generated by configure.sh on $(date '+%Y-%m-%d %H:%M:%S')
 # Sourced (executed) by every appliance script. It holds SECRETS (passwords,
 # Wi-Fi PSK, LUKS passphrase): keep it 0600 and never commit it.
-# Re-run ./setup-image.sh to change any answer; config.env.example documents
+# Re-run ./configure.sh to change any answer; config.env.example documents
 # every knob, including the ones this wizard does not ask about.
 
 # Position in \$ENVS fixes each env's workspace, subnet and bridge — the wizard
@@ -522,7 +527,7 @@ EOF
       [ -n "$DEBIAN_IMG_GPG_FPR" ] && printf 'DEBIAN_IMG_GPG_FPR="%s"\n' "$DEBIAN_IMG_GPG_FPR"
       cat <<EOF
 
-# --- build options (consumed by src/build/make-image.sh) ---------------------------
+# --- build options (consumed by src/build.sh) ---------------------------
 IMG_SIZE="$IMG_SIZE"
 ALPINE_BRANCH="$ALPINE_BRANCH"
 BAKE_CONFIG=$BAKE_CONFIG
@@ -549,15 +554,13 @@ EOF
 next_steps() {
   cat <<EOF
 
-Next steps:
-  1. Build + flash in one go (needs Docker running):
-       ./flash-image.sh
-     (or separately: ./src/build/make-image.sh, then flash by hand)
-  2. Boot the target machine from the USB — it auto-installs to the internal
-     disk and powers off. Remove the stick and boot again.
-  3. First boot: the appliance desktop (i3 kiosk + trust bar) starts
-     automatically. Admin work happens as root on tty2 (Ctrl+Alt+F2):
-       cd /opt/appliance && ./setup-machine.sh     # 1) create the VMs   2) isolate + verify
+config.env is written. The remaining two endpoints, in order:
+  2. ./flash.sh                    # build the image and flash a USB stick
+       (needs Docker running; or build by hand: ./src/build.sh)
+  3. Boot the target machine from the USB — it auto-installs to the internal
+     disk and powers off. Remove the stick and boot again. Then, as root on
+     tty2 (Ctrl+Alt+F2):
+       cd /opt/appliance && ./setup.sh   # 1) create the VMs   2) isolate + verify
 EOF
 }
 
@@ -582,7 +585,7 @@ fi
 
 cat <<'EOF'
 ==========================================================================
- Appliance image setup — fresh clone to bootable image, step by step.
+ Step 1 of 3 — configure the appliance (writes config.env).
  Empty answers keep the [defaults]; Ctrl+C aborts without writing anything.
 ==========================================================================
 EOF
@@ -599,21 +602,12 @@ ask_build_options
 show_summary
 ask_yn CONFIRM "Write config.env with these settings?" 1
 if [ "$CONFIRM" != "1" ]; then
-  log "Nothing written. Re-run ./setup-image.sh any time."
+  log "Nothing written. Re-run ./configure.sh any time."
   exit 0
 fi
 
 maybe_backup 1
 write_config
 ok "Wrote $CONFIG_ENV (0600)."
-
-ask_yn BUILD_NOW "Build the appliance image now (src/build/make-image.sh, needs Docker)?" 0
-if [ "$BUILD_NOW" = "1" ]; then
-  # make-image.sh reads these from its ENVIRONMENT (it does not source
-  # config.env), so hand the just-chosen build options over explicitly.
-  export IMG_SIZE ALPINE_BRANCH BAKE_CONFIG
-  log "Starting src/build/make-image.sh ..."
-  exec "$HERE/src/build/make-image.sh"
-fi
 
 next_steps

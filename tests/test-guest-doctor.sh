@@ -12,12 +12,9 @@ set -u
 echo "== environments/guest-doctor.sh + lib/guestdisk.sh + lib/de-install.sh =="
 
 new_sandbox
+# lib.sh carries common + guestdisk + de-install (and windows-unattend) in one file.
 # shellcheck source=/dev/null
-. "$SANDBOX/lib/common.sh"
-# shellcheck source=/dev/null
-. "$SANDBOX/lib/guestdisk.sh"
-# shellcheck source=/dev/null
-. "$SANDBOX/lib/de-install.sh"
+. "$SANDBOX/src/lib.sh"
 
 HASH='$6$testsalt$0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijklmno'
 
@@ -110,18 +107,18 @@ assert_eq "gdm3 autologin lands in custom.conf" "/etc/gdm3/custom.conf" "$(de_au
 
 # --- the report runs against the stubbed host without a disk ------------------
 new_sandbox
-"$SANDBOX/environments/create.sh" >/dev/null 2>&1
-"$SANDBOX/environments/guest-doctor.sh" office > "$SANDBOX/doctor.out" 2>&1
+"$SANDBOX/src/environments.sh" create >/dev/null 2>&1
+"$SANDBOX/src/environments.sh" guest-doctor office > "$SANDBOX/doctor.out" 2>&1
 assert_contains "the report names the environment" "$SANDBOX/doctor.out" '=== office'
 assert_contains "the report tells the operator how to fix a locked account" "$SANDBOX/doctor.out" 'guest-doctor.sh --password'
 
 # An env that was never created must say so rather than half-report.
-"$SANDBOX/environments/guest-doctor.sh" nosuchenv > "$SANDBOX/doctor2.out" 2>&1
+"$SANDBOX/src/environments.sh" guest-doctor nosuchenv > "$SANDBOX/doctor2.out" 2>&1
 assert_contains "an absent domain is reported plainly" "$SANDBOX/doctor2.out" 'DOES NOT EXIST'
 
 # Refuse to touch a RUNNING domain — mounting a live qcow2 corrupts it.
 touch "$SANDBOX/stub-state/running-office"
-"$SANDBOX/environments/guest-doctor.sh" --password office 'newpw123' > "$SANDBOX/doctor3.out" 2>&1
+"$SANDBOX/src/environments.sh" guest-doctor --password office 'newpw123' > "$SANDBOX/doctor3.out" 2>&1
 assert_contains "a running VM is refused, with the command to fix it" "$SANDBOX/doctor3.out" 'RUNNING'
 
 summary

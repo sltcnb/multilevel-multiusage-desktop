@@ -65,7 +65,7 @@ list of IPs/CIDRs, everything else dropped — which is handy for the sensitive
 `administration` VM. nftables matches IP addresses, not hostnames, so for
 name-based rules you'd point the whitelist at a filtering proxy.
 
-`src/environments/isolate.sh` builds all of this and then **verifies** it: from
+`src/environments.sh isolate` builds all of this and then **verifies** it: from
 inside each guest it pings every other subnet (must fail) and the internet (must
 succeed), and it checks on the host that every drop rule is actually live. A
 failed check is a failed run — the script exits non-zero, so a breach can't slip
@@ -78,7 +78,7 @@ script tells you isolation is not fully verified until you re-run it.
 `isolate.sh` proves isolation once, at setup — after that, nothing used to look
 again. A ruleset can be flushed, a libvirt network redefined, a script half
 re-run, and the machine keeps presenting three environments that no longer have
-a fence between them. `src/host/isolation-watch.sh` is the recurring check: every
+a fence between them. `src/host.sh isolation-watch` is the recurring check: every
 minute (busybox crond on the appliance, a systemd timer elsewhere) it asserts
 that every inter-environment DROP rule is still live in the kernel, and
 publishes the verdict to `/run/appliance/isolation.status` — one TAB-separated
@@ -91,9 +91,9 @@ file also means UNKNOWN, and readers must never crash on it. Anything that wants
 to show "is it still isolated?" reads this file — the trust bar lights up when
 the verdict is FAIL or UNKNOWN (it stays quiet while everything is OK). Running
 it by hand
-(`src/host/isolation-watch.sh --once`) exits 0/1/2 for OK/FAIL/UNKNOWN.
+(`src/host.sh isolation-watch --once`) exits 0/1/2 for OK/FAIL/UNKNOWN.
 
-The watch is installed automatically by `src/environments/isolate.sh`.
+The watch is installed automatically by `src/environments.sh isolate`.
 `ISOLATION_WATCH=0` disables it; `ISOLATION_WATCH_INTERVAL` sets the period in
 seconds (cron rounds sub-minute values up to a whole minute). Only state
 **transitions** are written to the audit log, so the one line that matters —
@@ -122,7 +122,7 @@ hash and direction — see below). Two properties matter more than the list:
   spool directory and are folded into the real log by the next root-run event.
 
 Read it as root with `tail -f /var/log/appliance-audit.log`, or with
-`audit_tail` from `src/lib/common.sh`.
+`audit_tail` from `src/lib.sh`.
 
 ## Inter-domain file diodes (ANSSI-PA-114 §3.18)
 
@@ -131,7 +131,7 @@ point of the isolation above, and it is exactly what PA-114 requires ("*Les
 communications entre domaines utilisateurs sont proscrites*"). PA-114 §3.18 then
 allows **one** narrow, optional exception when file exchange is genuinely needed
 and authorized: a **diode** — a *unidirectional, mediated, logged* transfer of
-**files** between two named domains. `src/environments/diode.sh` implements that
+**files** between two named domains. `src/environments.sh diode` implements that
 and only that. It is **off** unless you set `DIODES`.
 
 A diode here is **not** a one-way firewall rule. §3.18 forbids using it to create
@@ -147,8 +147,8 @@ How a transfer works, and how it maps to §3.18:
 
 1. **Queue it in the source (§3.18.3).** In the sending VM, drop the file into
    `~/diode-out/<destination-env>/`. Nothing leaves that you did not put there.
-2. **Run the diode (§3.18.2).** `./setup-machine.sh 11` (or
-   `src/environments/diode.sh`). Only the `SRC>DST` pairs in `DIODES` flow, in
+2. **Run the diode (§3.18.2).** `./setup.sh 11` (or
+   `src/environments.sh diode`). Only the `SRC>DST` pairs in `DIODES` flow, in
    that direction; an unlisted or reversed pair is refused.
 3. **Accept it on the host (§3.18.4).** For each file the host shows the name,
    size and sha256 and asks you to confirm. The prompt runs on the socle — a
@@ -186,49 +186,60 @@ The workflow is: build an image on your Mac (or any Docker host), flash it to a
 USB stick, boot the target machine from the stick once to install onto its
 internal disk, then remove the stick.
 
-### 1. Configure and build the image
+The whole build-host workflow is exactly three endpoints, in order — one to
+configure, one to build-and-flash, one to run on the appliance:
+
+```sh
+./configure.sh   # 1. write config.env
+./flash.sh       # 2. build the image, flash a USB stick
+./setup.sh       # 3. on the appliance: create + isolate the VMs
+```
+
+### 1. Configure
+
+```sh
+git clone <your-repo-url> multilevel
+cd multilevel
+./configure.sh
+```
+
+`configure.sh` is the entry point: an interactive wizard that runs on the build
+machine (macOS or Linux, no dependencies) and walks you through the environments,
+the credentials, Wi-Fi, the security toggles, the supply-chain pinning and the
+build options. It writes `config.env` (mode 0600; an existing one is backed up
+first) — and **nothing else**. It does not build or flash; that is `flash.sh`'s
+job. `./configure.sh --defaults` writes a default `config.env` non-interactively.
+You can equally copy `config.env.example` by hand instead of running the wizard.
+
+The shipped image keeps root **locked**; the installed system sets root at first
+boot from `HOST_ROOT_PASSWORD` (required — secrets are never auto-generated).
+
+### 2. Build and flash a USB stick
 
 You need Docker running. The build runs inside a privileged container so it works
 the same on an Apple-silicon Mac (it emulates x86-64) as on a Linux box.
 
 ```sh
-git clone <your-repo-url> multilevel
-cd multilevel
-./setup-image.sh
+./flash.sh
 ```
 
-`setup-image.sh` is the recommended entry point: an interactive wizard that runs
-on the build machine (macOS or Linux, no dependencies) and walks you through the
-environments, the credentials, Wi-Fi, the security toggles, the supply-chain
-pinning and the build options. It then writes `config.env` (mode 0600; an
-existing one is backed up first) and offers to run the build for you.
-`./setup-image.sh --defaults` writes a default `config.env` non-interactively.
-You can equally copy `config.env.example` by hand and run
-`./src/build/make-image.sh` yourself — the wizard only automates that.
-
-You get `out/appliance-alpine.qcow2` (~2 GB) after a few minutes.
+`flash.sh` does the whole second half in one go: it builds the image (reading the
+build options you chose in `config.env`), converts the qcow2 to raw, lists the
+external/removable disks, and flashes the one you pick — after you confirm the
+target by typing its device name a second time. It reuses an existing qcow2 if one
+is fresh (`--build` forces a rebuild); the system disk is refused outright, and
+`--image-only` stops before the flash step. You get `out/appliance-alpine.qcow2`
+(~2 GB) after a few minutes on the first run.
 
 If a local `config.env` exists, it is **baked into the image** so the appliance
 boots with your Wi-Fi / per-env / password settings already in place — no editing
 on the box, and the installer preserves it (hardware-detected values are still
 re-detected on the real machine at first boot). Because `config.env` holds secrets
 (Wi-Fi PSK, passwords), **the resulting image is sensitive — don't distribute it**.
-Skip baking with `BAKE_CONFIG=0 ./src/build/make-image.sh` (the appliance then starts
-from `config.env.example` and you edit it on tty2). The shipped image keeps root
-**locked**; the installed system sets root at first boot from `HOST_ROOT_PASSWORD`
-(required — secrets are never auto-generated).
+Skip baking with `BAKE_CONFIG=0` (the appliance then starts from
+`config.env.example` and you edit it on tty2).
 
-### 2. Flash a USB stick
-
-```sh
-./flash-image.sh
-```
-
-`flash-image.sh` does the whole second half in one go: it reuses the qcow2 you
-just built (or rebuilds it with `--build`), converts it to raw, lists the
-external/removable disks, and flashes the one you pick — after you confirm the
-target by typing its device name a second time. The system disk is refused
-outright, and `--image-only` stops before the flash step.
+You can also build by hand with `./src/build.sh` and flash it yourself:
 
 The manual equivalent (what the script runs under the hood):
 
@@ -253,10 +264,10 @@ Before booting:
   passthrough.
 - Set the machine to boot from USB.
 - Turn Secure Boot **off** for now (the image ships unsigned; you can turn it back
-  on later with `src/host/secure-boot.sh`).
+  on later with `src/host.sh secure-boot`).
 
 The image is built for UEFI, so pick the `UEFI: <your USB>` entry. If the machine
-is legacy-BIOS only, rebuild with `BOOT_MODE=BIOS ./src/build/make-image.sh`.
+is legacy-BIOS only, rebuild with `BOOT_MODE=BIOS ./src/build.sh`.
 
 ### 4. Boot the stick — it installs itself
 
@@ -266,7 +277,7 @@ countdown, wipes the disk, installs the appliance, and powers off. No network an
 no package downloads are needed for this step.
 
 If you'd rather do it by hand, hit `Ctrl+Alt+F2` and run
-`cd /opt/appliance && ./src/installer/install-to-disk.sh`.
+`cd /opt/appliance && ./src/host.sh install-to-disk`.
 
 ### 5. Remove the stick and power on
 
@@ -283,18 +294,18 @@ password immediately with `passwd`).
 
 ```sh
 cd /opt/appliance
-./setup-machine.sh           # the numbered menu of the remaining steps
+./setup.sh           # the numbered menu of the remaining steps
 ```
 
 The host base — hardware detection, kiosk user, hardening, i3 switching, Wi-Fi
 and the captive-portal hook — already ran automatically at first boot, so
-`setup-machine.sh` only offers what is left: **1) create the VMs** and **2)
+`setup.sh` only offers what is left: **1) create the VMs** and **2)
 isolate + verify**, plus the day-two operations (guest passwords, VPN, scrubbing
-secrets, secure boot). `./setup-machine.sh <n>` runs step n directly; each step
+secrets, secure boot). `./setup.sh <n>` runs step n directly; each step
 is also runnable as its own script.
 
 If you're on Wi-Fi, set `WIFI_SSID` / `WIFI_PSK` / `WIFI_COUNTRY` and run
-`./src/host/wifi.sh` (the passphrase is hashed, never stored in the clear). On wired
+`./src/host.sh wifi` (the passphrase is hashed, never stored in the clear). On wired
 ethernet you can skip this.
 
 If your Wi-Fi uses a captive portal with interactive Microsoft Entra / OAuth
@@ -316,8 +327,8 @@ image downloads without an integrity check (with a warning). Set
 Then build and lock down the VMs:
 
 ```sh
-./src/environments/create.sh     # downloads cloud images, provisions each enabled VM
-./src/environments/isolate.sh    # per-VM networks + firewall + the isolation checks
+./src/environments.sh create     # downloads cloud images, provisions each enabled VM
+./src/environments.sh isolate    # per-VM networks + firewall + the isolation checks
 ```
 
 `isolate.sh` prints PASS/FAIL for every check — each VM must reach the internet
@@ -329,7 +340,7 @@ one automatic reboot into the desktop — so the first boot is slow by design.
 Watch it with `virsh console <env>` (then in-guest `tail -f /var/log/de-install.log`).
 
 To change a guest's password later without rebuilding, use
-`./src/environments/set-guest-password.sh <env>` (live, via the guest agent).
+`./src/environments.sh set-guest-password <env>` (live, via the guest agent).
 
 Reboot to confirm the full experience: you land on the office VM full-screen and
 `Super+1/2/3` switches between them. `Super+Return` opens a terminal and
@@ -358,7 +369,7 @@ environment should get it. The key is then USB-passed-through to **only** that V
 and detached from any other — it's never shared across environments. A udev rule
 triggers the chooser on insert, and `Super+y` re-runs it manually. usbguard is
 told to admit YubiKeys specifically so they aren't blocked by the default USB
-lockdown. See `src/host/usb-to-vm.sh`.
+lockdown. See `src/host.sh usb-to-vm`.
 
 ## Configuration
 
@@ -388,7 +399,7 @@ administration_ENABLED=1; administration_OS="arch"; administration_DE="gnome"
 - **Desktop** — `<env>_DE` accepts `gnome`, `xfce4`, `kde`, `mate`, `lxqt`, or
   `none` for a CLI-only guest.
 - **Egress** — `<env>_EGRESS_MODE=all|whitelist` plus `<env>_EGRESS_ALLOW="ip ip"`.
-- **VPN** — `<env>_VPN=1` with WireGuard details, then run `src/environments/vpn.sh`.
+- **VPN** — `<env>_VPN=1` with WireGuard details, then run `src/environments.sh vpn`.
 - **Custom APT source** — point apt-family guests (ubuntu/debian) at your own
   package source instead of the public archives: `APT_MIRROR` sets a base mirror
   (via cloud-init `apt.primary`) and `APT_PROXY` sets a caching proxy such as
@@ -403,12 +414,12 @@ headroom reserved first.
 ### Secrets
 
 Every secret must be an explicit value you chose, written in `config.env` (by
-`setup-image.sh` or by hand): `HOST_ROOT_PASSWORD`, `GUEST_PASSWORD`,
+`configure.sh` or by hand): `HOST_ROOT_PASSWORD`, `GUEST_PASSWORD`,
 `LUKS_PASS`, and each `<env>_DISK_PASS`. Secrets are **never auto-generated** —
 a password you did not choose is a password you cannot know, and a generated
 root or LUKS password locks you out of your own machine. An empty secret is a
 hard error at provisioning, not a random value. Once everything is set up,
-`src/environments/scrub-secrets.sh` blanks them back out of `config.env`.
+`src/environments.sh scrub-secrets` blanks them back out of `config.env`.
 
 Don't bake secrets into a shipped image — set them on the appliance instead.
 
@@ -439,41 +450,49 @@ Don't bake secrets into a shipped image — set them on the appliance instead.
 
 ## Repository layout
 
+Three endpoints at the root, one per stage, and four files under `src/`:
+
 ```
-setup-image.sh            interactive build-machine wizard: writes config.env, runs the build
-flash-image.sh            build + convert + flash the image to a USB stick (safe disk picker)
+configure.sh              step 1: interactive wizard, writes config.env (only)
+flash.sh                  step 2: build the image + flash it to a USB stick (safe disk picker)
+setup.sh                  step 3: on the appliance, menu of the remaining steps (create VMs, isolate, day-two ops)
 config.env.example        template for config.env (secrets live only in config.env, git-ignored)
-setup-machine.sh          on the appliance: menu of the remaining steps (create VMs, isolate, day-two ops)
-src/lib/common.sh             shared helpers: logging, guards, config, the environment model, the audit log
-src/lib/guestdisk.sh          mount a shut-off guest's disk from the host (qemu-nbd); offline password/account repair
-src/lib/de-install.sh         one definition of the guest desktop installer, shared by create.sh and guest-doctor.sh
-src/lib/windows-unattend.sh   Windows 11 answer-file (autounattend.xml) generator — the Windows counterpart to de-install.sh
-src/build/make-image.sh       build the bootable Alpine image (runs in Docker)
-src/installer/install-to-disk.sh  clone the image onto the internal disk, optional LUKS
-src/host/
-  detect-and-install.sh   detect CPU/RAM/disk, install packages, nested virt, resource split
-  configure.sh            kiosk user, autologin, auto-startx, usbguard default-deny
-  harden.sh               kernel sysctl hardening + optional host firewall
-  switching.sh            i3 config per environment, keyd hotkeys, the trust bar
-  wifi.sh                 optional Wi-Fi uplink (hashed passphrase, stable MAC)
-  captive-portal.sh       optional Entra/OAuth captive-portal helper (Super+p)
-  usb-allow.sh            whitelist a USB device past the default-deny policy
-  usb-to-vm.sh            route a YubiKey/USB device to a chosen VM (Super+y / auto on plug)
-  isolation-watch.sh      recurring check that the isolation rules are still live + status file
-  update.sh               signed in-place update of the appliance tree (--check/--rollback)
-  secure-boot.sh          optional Secure Boot + TPM PCR binding (experimental)
-  tpm-initramfs-hook.sh   optional hands-free TPM unlock of the encrypted root
-src/environments/
-  create.sh               build each enabled VM, install its desktop, optional per-VM LUKS
-  isolate.sh              per-VM networks + all-pairs firewall drop + verification
-  vpn.sh                  optional per-VM non-bypassable WireGuard tunnel
-  set-guest-password.sh   change a running guest's password via the guest agent
-  guest-doctor.sh         inspect/repair a shut-off guest from the host — no password, no guest agent
-  scrub-secrets.sh        wipe secrets from config.env after setup
+
+src/lib.sh                shared library, sourced by everything: logging, guards, config, the
+                          environment model, the audit log, guest-disk mount (qemu-nbd), the
+                          guest desktop installer, and the Windows autounattend.xml generator
+src/build.sh              build the bootable Alpine image (runs in Docker)
+src/host.sh <command>     all host-side operations:
+    detect-and-install    detect CPU/RAM/disk, install packages, nested virt, resource split
+    configure             kiosk user, autologin, auto-startx, usbguard default-deny
+    harden                kernel sysctl hardening + optional host firewall
+    switching             i3 config per environment, keyd hotkeys, the trust bar
+    wifi                  optional Wi-Fi uplink (hashed passphrase, stable MAC)
+    captive-portal        optional Entra/OAuth captive-portal helper (Super+p)
+    install-to-disk       clone the image onto the internal disk, optional LUKS
+    isolation-watch       recurring check that the isolation rules are still live + status file
+    usb-allow             whitelist a USB device past the default-deny policy
+    usb-to-vm             route a YubiKey/USB device to a chosen VM (Super+y / auto on plug)
+    secure-boot           optional Secure Boot + TPM PCR binding (experimental)
+    tpm-initramfs-hook    optional hands-free TPM unlock of the encrypted root
+    compliance-check      post-install conformity gate
+    update                signed in-place update of the appliance tree (--check/--rollback)
+    update-packages       upgrade host + guests, write an SBOM
+    secure-erase          secure erasure / end-of-life decommission
+src/environments.sh <command>   all per-environment (guest VM) operations:
+    create                build each enabled VM, install its desktop, optional per-VM LUKS
+    isolate               per-VM networks + all-pairs firewall drop + verification
+    vpn                   optional per-VM non-bypassable WireGuard tunnel
+    set-guest-password    change a running guest's password via the guest agent
+    guest-doctor          inspect/repair a shut-off guest from the host — no password, no guest agent
+    scrub-secrets         wipe secrets from config.env after setup
+    diode                 PA-114 §3.18 inter-domain file diode (off unless DIODES is set)
 ```
 
-Every script is `set -eu` (`set -euo pipefail` under bash), checks for root and
-its dependencies, and is safe to re-run.
+`src/host.sh` and `src/environments.sh` are dispatchers: run a command with
+`src/host.sh <command> [args]`. `setup.sh` is just a friendly numbered menu over
+the common ones. Every script is `set -eu` (`set -euo pipefail` under bash),
+checks for root and its dependencies, and is safe to re-run.
 
 ## How the automated install of guests works
 
@@ -496,7 +515,7 @@ why.
 **Windows is a separate path.** There is no Windows cloud image and no cloud-init,
 so a `windows` environment installs from the ISO you supply (`WINDOWS_ISO`),
 driven by an `autounattend.xml` the appliance generates
-(`src/lib/windows-unattend.sh`) and hands to Windows Setup on a tiny CD. It runs
+(`src/lib.sh`) and hands to Windows Setup on a tiny CD. It runs
 on the profile Windows 11 requires — **q35 + UEFI + a software TPM (swtpm) +
 Secure Boot capability** — which is a different machine/firmware than the SeaBIOS
 Linux guests use. For a hands-off first install the target disk is presented as
@@ -509,7 +528,7 @@ resilience (password/network pre-seed, `guest-doctor`) applies to a Windows gues
 
 ## When a guest goes wrong
 
-`src/environments/guest-doctor.sh` is the tool for "I can't log in" and "there's
+`src/environments.sh guest-doctor` is the tool for "I can't log in" and "there's
 no desktop". It goes in through the **host**: `qemu-nbd` attaches the guest's
 qcow2 and the guest's filesystem becomes ordinary files. It therefore needs no
 password, no SSH and no qemu-guest-agent — which matters, because the agent is
@@ -522,9 +541,9 @@ also has open corrupts it, so every mode refuses to run against a running
 domain.
 
 ```sh
-./src/environments/guest-doctor.sh                 # report on every environment
-./src/environments/guest-doctor.sh --password office    # reset the login, offline
-./src/environments/guest-doctor.sh --install-de office  # arm the desktop install
+./src/environments.sh guest-doctor                 # report on every environment
+./src/environments.sh guest-doctor --password office    # reset the login, offline
+./src/environments.sh guest-doctor --install-de office  # arm the desktop install
 ```
 
 The report answers the questions you cannot answer from a console login prompt:
@@ -540,7 +559,7 @@ The report answers the questions you cannot answer from a console login prompt:
 
 ## Per-environment VPN
 
-`src/environments/vpn.sh` can give an environment its own encrypted tunnel that the
+`src/environments.sh vpn` can give an environment its own encrypted tunnel that the
 guest cannot turn off or bypass, because it's all enforced on the host:
 
 1. A WireGuard interface is created on the host from the environment's config.
@@ -558,7 +577,7 @@ WireGuard peer.
 
 Without an updater, shipping a fix to a machine in the field means rebuilding
 the image, reflashing a stick, wiping the internal disk and losing every VM —
-which in practice means the fix never lands. `src/host/update.sh` replaces the
+which in practice means the fix never lands. `src/host.sh update` replaces the
 `/opt/appliance` code tree in place and nothing else: `config.env`, the
 installer/first-boot markers, VM storage and the libvirt domain definitions are
 machine state and are carried across untouched. The new tree is downloaded,
@@ -567,9 +586,9 @@ never a partial copy over the live tree), and previous trees are kept so a bad
 update can be undone:
 
 ```sh
-./src/host/update.sh --check      # report what is available; change nothing
-./src/host/update.sh              # fetch, verify, swap in, re-run the host scripts
-./src/host/update.sh --rollback   # restore the previous tree
+./src/host.sh update --check      # report what is available; change nothing
+./src/host.sh update              # fetch, verify, swap in, re-run the host scripts
+./src/host.sh update --rollback   # restore the previous tree
 ```
 
 Signatures are mandatory because the alternative is "download and run as root":
@@ -590,21 +609,21 @@ but you enable it (sometimes with a firmware/hardware setting).
 | Requirement | Status | How it's met |
 |-------------|--------|--------------|
 | One environment per VM (preferred over sandboxes) | Built-in | each environment is its own KVM VM |
-| Hardened host, minimal trusted base | Built-in | minimal Alpine, no user apps; `src/host/harden.sh` sysctl hardening + optional host firewall |
+| Hardened host, minimal trusted base | Built-in | minimal Alpine, no user apps; `src/host.sh harden` sysctl hardening + optional host firewall |
 | Desktop runs unprivileged | Built-in | autologin an unprivileged `kiosk` user; root reserved for tty2 |
 | Always know the active environment | Built-in | the always-visible, color-coded trust bar |
-| Network isolation, no impersonation between environments | Built-in | separate bridge + subnet per env, nftables all-pairs drop, continuously re-verified by `src/host/isolation-watch.sh` |
+| Network isolation, no impersonation between environments | Built-in | separate bridge + subnet per env, nftables all-pairs drop, continuously re-verified by `src/host.sh isolation-watch` |
 | Per-environment outbound control | Built-in | `<env>_EGRESS_MODE=whitelist` |
 | Inter-domain exchange forbidden by default (§3.18) | Built-in | all-pairs DROP; nothing crosses unless a diode is explicitly configured |
-| Unidirectional, mediated, logged file diode (§3.18) | Opt-in | `DIODES="src>dst …"` + `src/environments/diode.sh`: host-mediated, per-file accept, sha256+direction logged, optional content scan |
-| Peripheral compartmentalization (USB) | Built-in | usbguard default-deny; whitelist with `src/host/usb-allow.sh`; YubiKey routed to one VM |
-| No secrets left at rest | Built-in | `src/environments/scrub-secrets.sh` blanks passwords/keys after setup |
+| Unidirectional, mediated, logged file diode (§3.18) | Opt-in | `DIODES="src>dst …"` + `src/environments.sh diode`: host-mediated, per-file accept, sha256+direction logged, optional content scan |
+| Peripheral compartmentalization (USB) | Built-in | usbguard default-deny; whitelist with `src/host.sh usb-allow`; YubiKey routed to one VM |
+| No secrets left at rest | Built-in | `src/environments.sh scrub-secrets` blanks passwords/keys after setup |
 | Traceability of security events | Built-in | append-only audit log (`/var/log/appliance-audit.log`): isolation transitions, portal logins, USB routing, updates |
 | Memory encryption (anti cold-boot) | Opt-in | `mem_encrypt=on` set; full DRAM encryption needs TSME enabled in firmware |
 | Disk encryption | Opt-in | LUKS2 via `ENCRYPT=1`; explicit `LUKS_PASS` required |
 | Per-environment user-keyed encryption | Opt-in | per-VM LUKS via `<env>_ENCRYPT_DISK=1` + `<env>_DISK_PASS` |
-| Dedicated non-bypassable VPN per environment | Opt-in | host-enforced WireGuard via `<env>_VPN=1` + `src/environments/vpn.sh` |
-| Secure/measured boot + TPM | Opt-in | `src/host/secure-boot.sh` (Secure Boot + TPM PCR bind) + `src/host/tpm-initramfs-hook.sh` |
+| Dedicated non-bypassable VPN per environment | Opt-in | host-enforced WireGuard via `<env>_VPN=1` + `src/environments.sh vpn` |
+| Secure/measured boot + TPM | Opt-in | `src/host.sh secure-boot` (Secure Boot + TPM PCR bind) + `src/host.sh tpm-initramfs-hook` |
 
 The opt-in items are left off by default for good reason: some depend on a
 firmware toggle the OS can't set (memory encryption needs TSME in the BIOS), and
@@ -614,14 +633,14 @@ encryption).
 
 ## Development
 
-Every script is `set -euo pipefail` (or `set -eu` for the POSIX `src/lib/common.sh`),
+Every script is `set -euo pipefail` (or `set -eu` for the POSIX `src/lib.sh`),
 checks for root and its dependencies, and is safe to re-run. Continuous
 integration runs [ShellCheck](https://www.shellcheck.net/) and the test suite on
 every push and pull request; ShellCheck fails on warnings and above. Run both
 locally before opening a PR:
 
 ```sh
-shellcheck -x -S warning setup-image.sh setup-machine.sh flash-image.sh src/lib/*.sh src/host/*.sh src/environments/*.sh src/installer/*.sh src/build/*.sh tests/*.sh
+shellcheck -x -S warning configure.sh setup.sh flash.sh src/*.sh tests/*.sh
 ./tests/run.sh
 ```
 
@@ -657,8 +676,8 @@ IN_CONTAINER=1 ./tests/run.sh    # already on a suitable Linux host, as root
 | `tests/test-ops.sh`     | the setup menu, USB routing, password changes, VPN, secret scrubbing |
 | `tests/test-audit.sh`   | the audit log: append-only, rotation, the unprivileged spool, never aborting its caller |
 | `tests/test-watch.sh`   | the isolation watch: status-file contract, transitions, the recurring timer |
-| `tests/test-setup-image.sh` | the build-machine wizard: defaults mode, piped answers, config.env backup/atomicity, interrupt safety |
-| `tests/test-flash-image.sh` | the flash entry point: image reuse, conversion, and the disk-safety refusals (system disk, unknown disk, bad confirmation) |
+| `tests/test-configure.sh` | the build-machine wizard: defaults mode, piped answers, config.env backup/atomicity, interrupt safety |
+| `tests/test-flash.sh` | the flash entry point: image reuse, conversion, and the disk-safety refusals (system disk, unknown disk, bad confirmation) |
 | `tests/test-compliance.sh` | the post-install compliance gate: verdict, missing-step detection, boot-block marker |
 | `tests/test-maint.sh` | the maintenance tools: package/SBOM run and the secure-erase dry-run guard |
 
@@ -678,17 +697,17 @@ Supply-chain integrity:
   file and aborts. Pair a hand-pinned hash with `<OS>_IMG_DATE` (the vendor's
   dated, immutable directory) or it goes stale on the next vendor rebuild.
   `REQUIRE_IMG_SHA256=1` makes a missing pin a hard error.
-- **Appliance updates.** `src/host/update.sh` fails closed: with no
+- **Appliance updates.** `src/host.sh update` fails closed: with no
   `UPDATE_GPG_FPR` pinned it refuses to install anything, because an unverified
   "download and run as root" is a remote root shell for whoever answers the
   URL. `UPDATE_INSECURE=1` is an explicit operator downgrade, not a supported
   configuration.
-- **Third-party apt keys.** `src/environments/create.sh` refuses to trust a Microsoft
+- **Third-party apt keys.** `src/environments.sh create` refuses to trust a Microsoft
   or Wazuh signing key whose fingerprint doesn't match the pinned value after
   import, and refuses to build the seed at all if you blank a fingerprint that
   the current config needs.
 
-`src/host/harden.sh` always sets `PermitEmptyPasswords no` and denies the
+`src/host.sh harden` always sets `PermitEmptyPasswords no` and denies the
 passwordless kiosk console account over SSH, regardless of the
 `HARDEN_INPUT`/`HOST_SSH` firewall settings.
 

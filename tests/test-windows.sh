@@ -26,7 +26,7 @@ cfg_set office_DE none
 touch "$SANDBOX/win11.iso"
 cfg_set WINDOWS_ISO "$SANDBOX/win11.iso"
 
-"$SANDBOX/environments/create.sh" > "$SANDBOX/win.out" 2>&1 && rc=0 || rc=$?
+"$SANDBOX/src/environments.sh" create > "$SANDBOX/win.out" 2>&1 && rc=0 || rc=$?
 assert_eq "create.sh completes for a Windows 11 office env" 0 "$rc"
 [ "$rc" = 0 ] || sed 's/^/    /' "$SANDBOX/win.out"
 
@@ -69,7 +69,7 @@ fi
 new_sandbox
 cfg_set office_OS windows
 cfg_set WINDOWS_ISO ""
-"$SANDBOX/environments/create.sh" > "$SANDBOX/noiso.out" 2>&1 && norc=0 || norc=$?
+"$SANDBOX/src/environments.sh" create > "$SANDBOX/noiso.out" 2>&1 && norc=0 || norc=$?
 if [ "$norc" -ne 0 ]; then _g "create.sh refuses a Windows env with no WINDOWS_ISO"
 else _b "create.sh refuses a Windows env with no WINDOWS_ISO"; fi
 assert_contains "and the refusal names WINDOWS_ISO" "$SANDBOX/noiso.out" "WINDOWS_ISO"

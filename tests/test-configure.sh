@@ -1,35 +1,35 @@
 #!/bin/sh
-# tests/test-setup-image.sh — the first-run image wizard (setup-image.sh).
+# tests/test-configure.sh — the first-run image wizard (configure.sh).
 #
 # The wizard writes config.env NEXT TO ITSELF, so instead of the harness
 # sandbox (which does not copy root-level scripts) each scenario stages
-# setup-image.sh + src/lib/common.sh in a throwaway mktemp dir and runs it there.
+# configure.sh + src/lib.sh in a throwaway mktemp dir and runs it there.
 # SKIP_PREFLIGHT=1 keeps the docker/disk host checks out of the tests, so this
 # file needs NO docker and NO stubs.
 set -u
 . "$(dirname "$0")/lib.sh"
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
-echo "== setup-image.sh =="
+echo "== configure.sh =="
 
 stage() {
   STAGE="$(mktemp -d)"
-  mkdir -p "$STAGE/src/lib"
-  cp "$REPO_ROOT/src/lib/common.sh" "$STAGE/src/lib/common.sh"
-  cp "$REPO_ROOT/setup-image.sh" "$STAGE/setup-image.sh"
+  mkdir -p "$STAGE/src"
+  cp "$REPO_ROOT/src/lib.sh" "$STAGE/src/lib.sh"
+  cp "$REPO_ROOT/configure.sh" "$STAGE/configure.sh"
   cp "$REPO_ROOT/config.env.example" "$STAGE/config.env.example"
 }
 
 # --- --help ---------------------------------------------------------------------
 stage
-assert_ok "--help exits 0" sh "$STAGE/setup-image.sh" --help
-sh "$STAGE/setup-image.sh" --help > "$STAGE/help.out" 2>&1
+assert_ok "--help exits 0" sh "$STAGE/configure.sh" --help
+sh "$STAGE/configure.sh" --help > "$STAGE/help.out" 2>&1
 assert_contains "--help documents --defaults" "$STAGE/help.out" '\-\-defaults'
-assert_fails "an unknown flag is rejected" sh "$STAGE/setup-image.sh" --bogus
+assert_fails "an unknown flag is rejected" sh "$STAGE/configure.sh" --bogus
 
 # --- --defaults -------------------------------------------------------------------
 stage
-SKIP_PREFLIGHT=1 sh "$STAGE/setup-image.sh" --defaults > "$STAGE/def.out" 2>&1
+SKIP_PREFLIGHT=1 sh "$STAGE/configure.sh" --defaults > "$STAGE/def.out" 2>&1
 assert_ok "generated config.env is valid shell" sh -n "$STAGE/config.env"
 assert_mode "generated config.env is 0600" 600 "$STAGE/config.env"
 assert_contains "defaults write the fixed env list" "$STAGE/config.env" '^ENVS="office development administration"$'
@@ -65,7 +65,7 @@ assert_contains "uncommented-but-empty pins are carried, inert (update stays fai
 # First three answers drive office; the two passwords are REQUIRED (no blanks
 # there); everything after takes the defaults from blank lines.
 stage
-( printf 'y\ndebian\nxfce4\n\n\n\n\n\n\n\nguestpw123\nrootpw123\n'; yes '' ) | SKIP_PREFLIGHT=1 sh "$STAGE/setup-image.sh" > "$STAGE/piped.out" 2>&1
+( printf 'y\ndebian\nxfce4\n\n\n\n\n\n\n\nguestpw123\nrootpw123\n'; yes '' ) | SKIP_PREFLIGHT=1 sh "$STAGE/configure.sh" > "$STAGE/piped.out" 2>&1
 assert_ok "piped config.env is valid shell" sh -n "$STAGE/config.env"
 assert_contains "a piped answer wins: office_OS=debian" "$STAGE/config.env" '^office_OS="debian"$'
 assert_contains "a piped answer wins: office_DE=xfce4" "$STAGE/config.env" '^office_DE="xfce4"$'
@@ -76,7 +76,7 @@ assert_contains "the office Intune warning is shown for a non-Ubuntu office" "$S
 
 # --- passwords are REQUIRED: blank answers cannot skip them ----------------------------
 stage
-( yes '' ) | SKIP_PREFLIGHT=1 sh "$STAGE/setup-image.sh" > "$STAGE/nopw.out" 2>&1
+( yes '' ) | SKIP_PREFLIGHT=1 sh "$STAGE/configure.sh" > "$STAGE/nopw.out" 2>&1
 _rc=$?
 if [ "$_rc" -ne 0 ]; then _g "all-blank input aborts at the required password"; PASS=$((PASS+1)); else
   _b "all-blank input aborts at the required password"; fi
@@ -87,7 +87,7 @@ assert_fails "and no config.env is written" test -f "$STAGE/config.env"
 stage
 printf '# ORIGINAL - DO NOT TOUCH\nGUEST_USER="original"\n' > "$STAGE/config.env"
 # The existing config has no passwords, so they must be answered (positions 11-12).
-( printf '\n%.0s' 1 2 3 4 5 6 7 8 9 10; printf 'guestpw\nrootpw\n'; yes '' ) | SKIP_PREFLIGHT=1 sh "$STAGE/setup-image.sh" > "$STAGE/bak.out" 2>&1
+( printf '\n%.0s' 1 2 3 4 5 6 7 8 9 10; printf 'guestpw\nrootpw\n'; yes '' ) | SKIP_PREFLIGHT=1 sh "$STAGE/configure.sh" > "$STAGE/bak.out" 2>&1
 _bak="$(ls "$STAGE"/config.env.bak-* 2>/dev/null | head -1)"
 if [ -n "$_bak" ]; then _g "an existing config.env is backed up before writing"; PASS=$((PASS+1)); else
   _b "an existing config.env is backed up before writing"; fi
@@ -104,7 +104,7 @@ printf '# ORIGINAL - DO NOT TOUCH\nGUEST_USER="original"\n' > "$STAGE/config.env
 { printf '\n%.0s' 1 2 3 4 5 6 7 8 9 10
   printf 'guestpw\nrootpw\n'
   printf '\n%.0s' 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16
-  printf 'n\n'; } | SKIP_PREFLIGHT=1 sh "$STAGE/setup-image.sh" > "$STAGE/ref.out" 2>&1
+  printf 'n\n'; } | SKIP_PREFLIGHT=1 sh "$STAGE/configure.sh" > "$STAGE/ref.out" 2>&1
 _rc=$?
 if [ "$_rc" -ne 0 ]; then _g "refusing overwrite aborts (non-zero exit)"; PASS=$((PASS+1)); else
   _b "refusing overwrite aborts (non-zero exit)"; fi
@@ -126,7 +126,7 @@ printf '# ORIGINAL - DO NOT TOUCH\nGUEST_USER="original"\n' > "$STAGE/config.env
 # so it exercises the identical interrupt path.
 mkfifo "$STAGE/in"
 exec 9<>"$STAGE/in"
-SKIP_PREFLIGHT=1 sh "$STAGE/setup-image.sh" <"$STAGE/in" >"$STAGE/sig.out" 2>&1 &
+SKIP_PREFLIGHT=1 sh "$STAGE/configure.sh" <"$STAGE/in" >"$STAGE/sig.out" 2>&1 &
 _sig_pid=$!
 sleep 2
 kill -TERM "$_sig_pid"
@@ -145,7 +145,7 @@ if ls "$STAGE"/config.env.tmp.* >/dev/null 2>&1; then
 stage
 mkfifo "$STAGE/in"
 exec 9<>"$STAGE/in"
-SKIP_PREFLIGHT=1 sh "$STAGE/setup-image.sh" <"$STAGE/in" >"$STAGE/sig2.out" 2>&1 &
+SKIP_PREFLIGHT=1 sh "$STAGE/configure.sh" <"$STAGE/in" >"$STAGE/sig2.out" 2>&1 &
 _sig_pid=$!
 sleep 2
 kill -TERM "$_sig_pid"

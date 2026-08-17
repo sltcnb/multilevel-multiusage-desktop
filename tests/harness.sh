@@ -17,13 +17,11 @@ PATH="$STUBS:$PATH"; export PATH
 new_sandbox() {
   SANDBOX="$(mktemp -d)"
   export SANDBOX
-  for d in lib host environments installer build; do
-    mkdir -p "$SANDBOX/$d"
-    cp "$REPO_ROOT/src/$d"/* "$SANDBOX/$d/" 2>/dev/null || true
-  done
-  cp "$REPO_ROOT/setup-machine.sh" "$SANDBOX/setup-machine.sh"
+  mkdir -p "$SANDBOX/src"
+  cp "$REPO_ROOT/src"/*.sh "$SANDBOX/src/" 2>/dev/null || true
+  cp "$REPO_ROOT/setup.sh" "$SANDBOX/setup.sh"
   cp "$REPO_ROOT/config.env.example" "$SANDBOX/config.env.example"
-  chmod +x "$SANDBOX"/*/*.sh "$SANDBOX/setup-machine.sh" 2>/dev/null || true
+  chmod +x "$SANDBOX/src"/*.sh "$SANDBOX/setup.sh" 2>/dev/null || true
 
   STUB_LOG="$SANDBOX/stub.log"; : > "$STUB_LOG"
   STUB_STATE="$SANDBOX/stub-state"; mkdir -p "$STUB_STATE"

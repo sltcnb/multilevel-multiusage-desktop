@@ -8,7 +8,7 @@ set -u
 echo "== host/harden.sh =="
 new_sandbox
 rm -rf /etc/nftables.d
-"$SANDBOX/host/harden.sh" > "$SANDBOX/harden.out" 2>&1
+"$SANDBOX/src/host.sh" harden > "$SANDBOX/harden.out" 2>&1
 assert_eq "harden.sh succeeds with the default (opt-out) input firewall" 0 "$?"
 assert_contains "sysctl hardening is written" /etc/sysctl.d/90-appliance-hardening.conf 'kernel.kptr_restrict=2'
 assert_contains "IPv6 forwarding stays off (the egress rules are v4-only)" /etc/sysctl.d/90-appliance-hardening.conf 'net.ipv6.conf.all.forwarding=0'
@@ -18,11 +18,11 @@ assert_contains "IPv6 forwarding stays off (the egress rules are v4-only)" /etc/
 mkdir -p /etc/ssh
 printf 'PermitEmptyPasswords yes\nPasswordAuthentication yes\n' > /etc/ssh/sshd_config
 rm -f /etc/ssh/sshd_config.orig
-"$SANDBOX/host/harden.sh" > "$SANDBOX/harden2.out" 2>&1
+"$SANDBOX/src/host.sh" harden > "$SANDBOX/harden2.out" 2>&1
 assert_contains "an existing PermitEmptyPasswords yes is rewritten to no" /etc/ssh/sshd_config '^PermitEmptyPasswords no$'
 assert_not_contains "no 'yes' variant survives" /etc/ssh/sshd_config 'PermitEmptyPasswords yes'
 assert_contains "the kiosk account is denied over SSH" /etc/ssh/sshd_config '^DenyUsers kiosk$'
-"$SANDBOX/host/harden.sh" > /dev/null 2>&1
+"$SANDBOX/src/host.sh" harden > /dev/null 2>&1
 assert_eq "re-running does not duplicate the DenyUsers line" 1 "$(grep -c '^DenyUsers kiosk$' /etc/ssh/sshd_config)"
 
 # The opt-in default-drop input firewall. It runs BEFORE isolate.sh at first
@@ -31,7 +31,7 @@ new_sandbox
 rm -rf /etc/nftables.d
 cfg_set HARDEN_INPUT 1
 nft flush ruleset 2>/dev/null || true
-"$SANDBOX/host/harden.sh" > "$SANDBOX/hardenfw.out" 2>&1
+"$SANDBOX/src/host.sh" harden > "$SANDBOX/hardenfw.out" 2>&1
 fw_rc=$?
 assert_eq "HARDEN_INPUT=1 succeeds even when /etc/nftables.d is absent" 0 "$fw_rc"
 assert_ok "the host input ruleset loads into a real kernel nftables" \
@@ -48,7 +48,7 @@ assert_contains "guest DNS (tcp) to the bridge gateway is allowed" "$INP" 'iifna
 assert_not_contains "ssh stays closed unless HOST_SSH=1" "$INP" 'tcp dport 22 accept'
 new_sandbox
 cfg_set HARDEN_INPUT 1; cfg_set HOST_SSH 1
-"$SANDBOX/host/harden.sh" > /dev/null 2>&1
+"$SANDBOX/src/host.sh" harden > /dev/null 2>&1
 assert_contains "HOST_SSH=1 opens port 22" "$INP" 'tcp dport 22 accept'
 nft flush ruleset 2>/dev/null || true
 
@@ -58,7 +58,7 @@ new_sandbox
 cfg_set USBGUARD 1
 cfg_set YUBIKEY_ROUTER 1
 mkdir -p /etc/usbguard
-"$SANDBOX/host/configure.sh" > "$SANDBOX/configure.out" 2>&1
+"$SANDBOX/src/host.sh" configure > "$SANDBOX/configure.out" 2>&1
 cfg_rc=$?
 assert_eq "configure.sh succeeds" 0 "$cfg_rc"
 KH="$(getent passwd kiosk | cut -d: -f6)"; KH="${KH:-/home/kiosk}"
@@ -80,13 +80,13 @@ assert_contains "the chooser reads the live X cookie (startx uses .serverauth)" 
 assert_contains "a keyboard layout with a variant is split correctly" "$KH/.xinitrc" 'setxkbmap us'
 new_sandbox
 cfg_set KEYBOARD_LAYOUT "fr:oss"
-"$SANDBOX/host/configure.sh" > /dev/null 2>&1
+"$SANDBOX/src/host.sh" configure > /dev/null 2>&1
 assert_contains "layout:variant becomes -variant" "$KH/.xinitrc" 'setxkbmap fr -variant oss'
 
 echo
 echo "== host/switching.sh =="
 new_sandbox
-"$SANDBOX/host/switching.sh" > "$SANDBOX/switching.out" 2>&1
+"$SANDBOX/src/host.sh" switching > "$SANDBOX/switching.out" 2>&1
 sw_rc=$?
 assert_eq "switching.sh succeeds" 0 "$sw_rc"
 I3="$KH/.config/i3/config"
@@ -140,7 +140,7 @@ assert_contains "virt-viewer's windowed header is collapsed via gtk.css" "$KH/.c
 new_sandbox
 cfg_set office_EGRESS_MODE whitelist
 cfg_set administration_VPN 1
-"$SANDBOX/host/switching.sh" > /dev/null 2>&1
+"$SANDBOX/src/host.sh" switching > /dev/null 2>&1
 AE="$KH/.config/polybar/active-env.sh"
 # Source only the lookup header (everything before render()) so the lookups can
 # be exercised without a running i3.
@@ -179,7 +179,7 @@ assert_contains "an unparsable status file renders 'isolation ?'" "$SANDBOX/iso.
 # Disabling an env removes its hotkey and viewer but not the others' numbers.
 new_sandbox
 cfg_set development_ENABLED 0
-"$SANDBOX/host/switching.sh" > /dev/null 2>&1
+"$SANDBOX/src/host.sh" switching > /dev/null 2>&1
 assert_not_contains "a disabled env gets no viewer" "$I3" 'vm-viewer.sh development'
 assert_not_contains "a disabled env gets no hotkey" /etc/keyd/default.conf 'meta\+2 ='
 assert_contains "the remaining envs keep their numbers" /etc/keyd/default.conf 'meta\+3 = command\(/usr/local/bin/vmswitch 3\)'
@@ -187,14 +187,14 @@ assert_contains "the remaining envs keep their numbers" /etc/keyd/default.conf '
 # TRUST_BAR=0 is the documented alternative: true fullscreen, no bar.
 new_sandbox
 cfg_set TRUST_BAR 0
-"$SANDBOX/host/switching.sh" > /dev/null 2>&1
+"$SANDBOX/src/host.sh" switching > /dev/null 2>&1
 assert_contains "TRUST_BAR=0 lets viewers go fullscreen" "$I3" 'fullscreen enable'
 assert_eq "TRUST_BAR=0 launches the viewer full-screen" "--full-screen" "$(cat "$KH/.vm-viewer-fs")"
 
 echo
 echo "== host/wifi.sh =="
 new_sandbox
-"$SANDBOX/host/wifi.sh" > "$SANDBOX/wifi-noop.out" 2>&1
+"$SANDBOX/src/host.sh" wifi > "$SANDBOX/wifi-noop.out" 2>&1
 assert_eq "no SSID configured is a clean no-op (wired host)" 0 "$?"
 assert_contains "and says so" "$SANDBOX/wifi-noop.out" 'skipping WiFi setup'
 
@@ -203,29 +203,29 @@ cfg_set WIFI_SSID "TestNet"
 cfg_set WIFI_PSK "supersecret"
 cfg_set WIFI_IFACE "wlan0"
 mkdir -p /sys/class/net 2>/dev/null || true
-"$SANDBOX/host/wifi.sh" > "$SANDBOX/wifi.out" 2>&1
+"$SANDBOX/src/host.sh" wifi > "$SANDBOX/wifi.out" 2>&1
 assert_contains "the PSK is stored hashed" /etc/wpa_supplicant/wpa_supplicant.conf 'psk=deadbeef'
 assert_not_contains "the plaintext passphrase is never written" /etc/wpa_supplicant/wpa_supplicant.conf 'supersecret'
 assert_mode "wpa_supplicant.conf is root-only" 600 /etc/wpa_supplicant/wpa_supplicant.conf
 # A randomised MAC would lose the captive-portal session on every reassociation.
 assert_contains "the hardware MAC is pinned for the captive portal" /etc/wpa_supplicant/wpa_supplicant.conf 'mac_addr=0'
 assert_contains "the uplink is recorded for isolate.sh" "$SANDBOX/config.env" '^WAN_IFACE="wlan0"$'
-"$SANDBOX/host/wifi.sh" > /dev/null 2>&1
+"$SANDBOX/src/host.sh" wifi > /dev/null 2>&1
 assert_eq "re-running does not duplicate the interfaces stanza" \
   1 "$(grep -c '^auto wlan0$' /etc/network/interfaces)"
 
 echo
 echo "== host/captive-portal.sh =="
 new_sandbox
-"$SANDBOX/host/switching.sh" > /dev/null 2>&1
-"$SANDBOX/host/captive-portal.sh" > "$SANDBOX/portal.out" 2>&1
+"$SANDBOX/src/host.sh" switching > /dev/null 2>&1
+"$SANDBOX/src/host.sh" captive-portal > "$SANDBOX/portal.out" 2>&1
 assert_eq "captive-portal.sh succeeds" 0 "$?"
 # It must land in the KIOSK home: /root is mode 0700 and the desktop is not root.
 assert_contains "the helper is written where the kiosk user can run it" "$KH/portal-login.sh" 'PROBE='
 assert_eq "the helper is owned by the kiosk user" "kiosk" "$(stat -c '%U' "$KH/portal-login.sh")"
 assert_contains "it no-ops when already online" "$KH/portal-login.sh" '"\$code" = "204"'
 assert_contains "it opens the redirect target the portal supplies" "$KH/portal-login.sh" 'redirect_url'
-"$SANDBOX/host/captive-portal.sh" > /dev/null 2>&1
+"$SANDBOX/src/host.sh" captive-portal > /dev/null 2>&1
 assert_eq "re-running does not duplicate the i3 binding" \
   1 "$(grep -c 'portal-login.sh' "$I3")"
 

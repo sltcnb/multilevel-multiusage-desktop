@@ -25,16 +25,12 @@ jobs:
 
       - name: Run shellcheck (warning severity)
         run: |
-          # -x follows sourced files (src/lib/common.sh); fail on warnings and above.
+          # -x follows sourced files (src/lib.sh); fail on warnings and above.
           shellcheck -x -S warning \
-            setup-image.sh \
-            setup-machine.sh \
-            flash-image.sh \
-            src/lib/*.sh \
-            src/host/*.sh \
-            src/environments/*.sh \
-            src/installer/*.sh \
-            src/build/*.sh \
+            configure.sh \
+            setup.sh \
+            flash.sh \
+            src/*.sh \
             tests/*.sh
 
   tests:

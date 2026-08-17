@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# build/make-image.sh
+# src/build.sh
 # -----------------------------------------------------------------------------
 # Produce a BOOTABLE Alpine qcow2 image with:
 #   * all host packages preinstalled (kvm/qemu/libvirt/virt-viewer/xorg/i3/nft)
@@ -8,8 +8,8 @@
 #   * nested virt + autologin + auto-startx already wired
 #   * a one-shot first-boot service that runs the host base (detect-and-install,
 #     configure, harden, switching, wifi, captive-portal) idempotently, leaving
-#     VM creation (src/environments/create.sh) and firewall+verify (isolate.sh) — the
-#     ./setup-machine.sh steps — to you.
+#     VM creation (src/environments.sh create) and firewall+verify (isolate.sh) — the
+#     ./setup.sh steps — to you.
 #
 # HOW IT WORKS (macOS/darwin host):
 #   Building an Alpine root filesystem + bootloader needs Linux + loop devices.
@@ -28,9 +28,9 @@
 # =============================================================================
 set -euo pipefail
 
-# This script lives in src/build/; the repo root is two levels up.
+# This script lives at src/build.sh; the repo root is one level up.
 HERE="$(cd "$(dirname "$0")" && pwd)"
-ROOT="$(cd "$HERE/../.." && pwd)"
+ROOT="$(cd "$HERE/.." && pwd)"
 cd "$ROOT"
 
 # --- tunables (overridable via env) ------------------------------------------
@@ -40,7 +40,7 @@ cd "$ROOT"
                                             # 6.6 (v3.20) is too old for this HW.
 : "${IMG_SIZE:=4G}"                         # SMALL host image (OS uses ~1.7G). Kept
                                             # small so the USB->internal dd clone in
-                                            # src/installer/ is fast; growpart then expands
+                                            # host.sh install-to-disk is fast; growpart then expands
                                             # root to fill the internal disk after.
 : "${OUT_DIR:=$ROOT/out}"
 : "${OUT_IMG:=appliance-alpine.qcow2}"
@@ -60,7 +60,7 @@ mkdir -p "$OUT_DIR"
 echo "[*] Packing appliance tree ..."
 # Tar the whole tree (preserving the src/<group>/ layout) so it extracts to
 # /opt/appliance with the same structure the scripts expect.
-BAKE_FILES="config.env.example README.md setup-machine.sh src"
+BAKE_FILES="config.env.example README.md setup.sh src"
 # Optionally bake the LOCAL config.env so the appliance boots with your Wi-Fi /
 # per-env / password settings already in place (no editing on the box). This is
 # OFF BY DEFAULT (T-16 / SO-11): config.env holds SECRETS (Wi-Fi PSK, guest+root
@@ -121,7 +121,7 @@ cat >> /work/profile.sh <<'PROFILE'
 PAYLOAD
 )"
 
-# 1. Host packages (same set as src/host/detect-and-install.sh; preinstalled here).
+# 1. Host packages (same set as src/host.sh detect-and-install; preinstalled here).
 #    Community repo needed for i3wm/virt-viewer.
 setup-apkrepos -c -1 2>/dev/null || true
 sed -i 's/^#\(.*\/community\)/\1/' /etc/apk/repositories 2>/dev/null || true
@@ -175,9 +175,9 @@ fi
 # 2. Unpack repo scripts into /opt/appliance.
 mkdir -p /opt/appliance
 echo "$APPLIANCE_TAR_B64" | base64 -d | tar -xzf - -C /opt/appliance
-chmod +x /opt/appliance/src/*/*.sh /opt/appliance/setup-machine.sh 2>/dev/null || true
+chmod +x /opt/appliance/src/*.sh /opt/appliance/setup.sh 2>/dev/null || true
 # If a local config.env was baked in, lock its perms (it holds secrets) and mark
-# it so src/installer/install-to-disk.sh PRESERVES it instead of wiping it for a
+# it so src/host.sh install-to-disk PRESERVES it instead of wiping it for a
 # fresh detect. Hardware keys still get refreshed by detect-and-install at boot.
 if [ -f /opt/appliance/config.env ]; then
   chmod 600 /opt/appliance/config.env 2>/dev/null || true
@@ -192,7 +192,7 @@ for g in libvirt libvirtd kvm video input; do addgroup kiosk "$g" 2>/dev/null ||
 passwd -u kiosk 2>/dev/null || true       # unlock (no password; console autologin only)
 # Root stays LOCKED in the shipped image — never bake a well-known password. The
 # installed system sets a real root password at first boot from HOST_ROOT_PASSWORD
-# (src/host/configure.sh; default "generate" -> strong random in /root/generated-secrets.txt).
+# (src/host.sh configure; default "generate" -> strong random in /root/generated-secrets.txt).
 passwd -l root 2>/dev/null || true
 
 # Autologin the KIOSK user on tty1 (not root).
@@ -280,7 +280,7 @@ start() {
     if booted_from_usb; then
         # USB installer mode: auto-install to the internal disk, then poweroff.
         ebegin "USB installer — auto-installing to internal disk"
-        AUTO_CONFIRM=1 sh ./src/installer/install-to-disk.sh
+        AUTO_CONFIRM=1 bash ./src/host.sh install-to-disk
         eend $?    # installer powers off on success
         return 0
     fi
@@ -291,12 +291,12 @@ start() {
     # switching), configure writes autologin/.profile/.xinitrc, switching writes
     # the i3 config (needed by captive-portal). detect-and-install is non-fatal.
     ebegin "Appliance first-boot (host provisioning)"
-    sh ./src/host/detect-and-install.sh   || eerror "host/detect-and-install failed"
-    sh ./src/host/configure.sh            || eerror "host/configure failed"
-    sh ./src/host/harden.sh               || eerror "host/harden failed"
-    sh ./src/host/switching.sh            || eerror "host/switching failed"
-    sh ./src/host/wifi.sh                 || eerror "host/wifi failed"
-    sh ./src/host/captive-portal.sh       || eerror "host/captive-portal failed"
+    bash ./src/host.sh detect-and-install || eerror "host/detect-and-install failed"
+    bash ./src/host.sh configure          || eerror "host/configure failed"
+    bash ./src/host.sh harden             || eerror "host/harden failed"
+    bash ./src/host.sh switching          || eerror "host/switching failed"
+    bash ./src/host.sh wifi               || eerror "host/wifi failed"
+    bash ./src/host.sh captive-portal     || eerror "host/captive-portal failed"
     # Mark done regardless — do not re-wedge on every boot. Re-run scripts by
     # hand from a terminal (Super+Enter) if a step needs fixing.
     rc-update del appliance-firstboot default || true
@@ -412,7 +412,7 @@ Boot it:
    deploy to bare metal.)
 
 Flash to USB / bare metal:
-  ./flash-image.sh            # interactive: convert + pick the stick + dd (recommended)
+  ./flash.sh            # interactive: convert + pick the stick + dd (recommended)
   — or by hand:
   qemu-img convert -O raw $OUT_DIR/$OUT_IMG $OUT_DIR/appliance.raw
   sudo dd if=$OUT_DIR/appliance.raw of=/dev/rdiskN bs=4m   # <-- pick the right disk!
@@ -421,5 +421,5 @@ First boot auto-runs the whole host base (hardware detect, kiosk user,
 hardening, i3 switching, Wi-Fi + captive-portal hook). What is left for the
 operator, as ROOT on tty2 (Ctrl+Alt+F2 — there is deliberately no sudo on the
 host):
-  cd /opt/appliance && ./setup-machine.sh        # 1) create VMs   2) isolate + verify
+  cd /opt/appliance && ./setup.sh        # 1) create VMs   2) isolate + verify
 EOF

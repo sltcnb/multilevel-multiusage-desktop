@@ -26,7 +26,7 @@ configure_diodes() {
 new_sandbox
 configure_diodes
 gput administration "$OUT/development/report.txt" "hello-diode-payload"
-AUDIT_LOG="$SANDBOX/audit.log" "$SANDBOX/environments/diode.sh" --yes > "$SANDBOX/run.out" 2>&1
+AUDIT_LOG="$SANDBOX/audit.log" "$SANDBOX/src/environments.sh" diode --yes > "$SANDBOX/run.out" 2>&1
 delivered="$(gpath development "$IN/administration/report.txt")"
 assert_ok "file delivered into the destination guest inbox" test -f "$delivered"
 if [ -f "$delivered" ]; then
@@ -46,7 +46,7 @@ assert_contains "the logged hash is the payload's actual hash" "$SANDBOX/audit.l
 new_sandbox
 configure_diodes
 gput development "$OUT/administration/leak.txt" "should-not-move"
-AUDIT_LOG="$SANDBOX/audit.log" "$SANDBOX/environments/diode.sh" --yes > "$SANDBOX/rev.out" 2>&1
+AUDIT_LOG="$SANDBOX/audit.log" "$SANDBOX/src/environments.sh" diode --yes > "$SANDBOX/rev.out" 2>&1
 assert_ok "an unconfigured reverse direction delivers nothing" sh -c "[ ! -e '$(gpath administration "$IN/development/leak.txt")' ]"
 assert_ok "the reverse-direction source file is left untouched" test -f "$(gpath development "$OUT/administration/leak.txt")"
 
@@ -54,7 +54,7 @@ assert_ok "the reverse-direction source file is left untouched" test -f "$(gpath
 new_sandbox
 configure_diodes
 gput administration "$OUT/office/memo.txt" "peek-only"
-AUDIT_LOG="$SANDBOX/audit.log" "$SANDBOX/environments/diode.sh" --list > "$SANDBOX/list.out" 2>&1
+AUDIT_LOG="$SANDBOX/audit.log" "$SANDBOX/src/environments.sh" diode --list > "$SANDBOX/list.out" 2>&1
 assert_contains "list mode names the pending file" "$SANDBOX/list.out" 'memo.txt'
 assert_ok "list mode transfers nothing" sh -c "[ ! -e '$(gpath office "$IN/administration/memo.txt")' ]"
 assert_ok "list mode leaves the source in place" test -f "$(gpath administration "$OUT/office/memo.txt")"
@@ -64,7 +64,7 @@ assert_not_contains "list mode logs no delivery" "$SANDBOX/audit.log" 'decision=
 new_sandbox
 configure_diodes
 gput administration "$OUT/development/bad name.txt" "sneaky"
-AUDIT_LOG="$SANDBOX/audit.log" "$SANDBOX/environments/diode.sh" --yes > "$SANDBOX/unsafe.out" 2>&1
+AUDIT_LOG="$SANDBOX/audit.log" "$SANDBOX/src/environments.sh" diode --yes > "$SANDBOX/unsafe.out" 2>&1
 assert_contains "an unsafe filename is refused" "$SANDBOX/audit.log" 'decision=refused reason=unsafe-name'
 assert_ok "the unsafe file is not delivered" sh -c "[ ! -e '$(gpath development "$IN/administration/bad name.txt")' ]"
 
@@ -73,7 +73,7 @@ new_sandbox
 configure_diodes
 cfg_set DIODE_MAX_BYTES 8
 gput administration "$OUT/development/big.bin" "this is definitely more than eight bytes"
-AUDIT_LOG="$SANDBOX/audit.log" "$SANDBOX/environments/diode.sh" --yes > "$SANDBOX/big.out" 2>&1
+AUDIT_LOG="$SANDBOX/audit.log" "$SANDBOX/src/environments.sh" diode --yes > "$SANDBOX/big.out" 2>&1
 assert_contains "an oversized file is refused" "$SANDBOX/audit.log" 'decision=refused reason=too-big'
 assert_ok "the oversized file is not delivered" sh -c "[ ! -e '$(gpath development "$IN/administration/big.bin")' ]"
 
@@ -83,7 +83,7 @@ configure_diodes
 cfg_set DIODE_SCAN 1
 cfg_set DIODE_SCAN_DENYLIST "TOPSECRET"
 gput administration "$OUT/development/doc.txt" "contains TOPSECRET marker"
-AUDIT_LOG="$SANDBOX/audit.log" "$SANDBOX/environments/diode.sh" --yes > "$SANDBOX/scan.out" 2>&1
+AUDIT_LOG="$SANDBOX/audit.log" "$SANDBOX/src/environments.sh" diode --yes > "$SANDBOX/scan.out" 2>&1
 assert_contains "a deny-listed file is refused with the reason" "$SANDBOX/audit.log" 'decision=refused reason=denylist:TOPSECRET'
 assert_ok "the deny-listed file is not delivered" sh -c "[ ! -e '$(gpath development "$IN/administration/doc.txt")' ]"
 
@@ -91,18 +91,18 @@ assert_ok "the deny-listed file is not delivered" sh -c "[ ! -e '$(gpath develop
 new_sandbox
 configure_diodes
 assert_fails "an unlisted --pair is refused as unauthorized" \
-  "$SANDBOX/environments/diode.sh" --pair "office>administration" --yes
+  "$SANDBOX/src/environments.sh" diode --pair "office>administration" --yes
 
 # --- a malformed diode entry fails loudly, not silently -----------------------
 new_sandbox
 cfg_set DIODES "administration>administration"
 assert_fails "a same-source-and-destination diode is rejected" \
-  "$SANDBOX/environments/diode.sh" --yes
+  "$SANDBOX/src/environments.sh" diode --yes
 
 # --- no diodes configured: a clean no-op (the PA-114 default) ------------------
 new_sandbox
 cfg_set DIODES ""
-AUDIT_LOG="$SANDBOX/audit.log" "$SANDBOX/environments/diode.sh" --yes > "$SANDBOX/none.out" 2>&1
+AUDIT_LOG="$SANDBOX/audit.log" "$SANDBOX/src/environments.sh" diode --yes > "$SANDBOX/none.out" 2>&1
 assert_eq "with no diodes configured the script is a clean no-op" 0 "$?"
 assert_contains "it says inter-domain exchange stays blocked" "$SANDBOX/none.out" 'blocked, which is the PA-114 default'
 

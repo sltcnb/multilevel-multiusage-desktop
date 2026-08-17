@@ -1,5 +1,5 @@
 #!/bin/sh
-# tests/test-watch.sh — host/isolation-watch.sh, the continuous half of the
+# tests/test-watch.sh — host/isolation-watch, the continuous half of the
 # isolation guarantee. The container is privileged, so every ruleset here is
 # loaded into the REAL kernel and then really tampered with: a rule is deleted
 # by handle, the whole table is flushed. The watch has to notice from the kernel
@@ -8,12 +8,12 @@ set -u
 . "$(dirname "$0")/lib.sh"
 . "$(dirname "$0")/harness.sh"
 
-echo "== host/isolation-watch.sh =="
+echo "== host/isolation-watch =="
 new_sandbox
 
 STATUS=/run/appliance/isolation.status
 AUDIT=/var/log/appliance-audit.log
-WATCH="$SANDBOX/host/isolation-watch.sh"
+WATCH="$SANDBOX/src/host.sh"
 
 # Wipe the tmpfs state and the audit log — the state a freshly booted appliance
 # would have.
@@ -22,7 +22,7 @@ reset_runtime() { rm -rf /run/appliance; rm -f "$AUDIT"; }
 # Load a known-good isolation ruleset by running the real generator.
 apply_isolation() {
   nft flush ruleset 2>/dev/null || true
-  STUB_AGENT=down "$SANDBOX/environments/isolate.sh" > "$SANDBOX/isolate.out" 2>&1
+  STUB_AGENT=down "$SANDBOX/src/environments.sh" isolate > "$SANDBOX/isolate.out" 2>&1
 }
 
 # Fields of the CONTRACT A line.
@@ -47,11 +47,11 @@ else
   _b "isolate.sh leaves a populated status file behind"
 fi
 assert_eq "isolate.sh still exits 0 when its own checks pass" 0 "$?" >/dev/null 2>&1
-assert_contains "the crontab line runs the watch" /etc/crontabs/root 'isolation-watch\.sh --once'
+assert_contains "the crontab line runs the watch" /etc/crontabs/root 'isolation-watch --once'
 
 # --- CONTRACT A format --------------------------------------------------------
 reset_runtime
-"$WATCH" --once > "$SANDBOX/ok.out" 2>&1
+"$WATCH" isolation-watch --once > "$SANDBOX/ok.out" 2>&1
 rc_ok=$?
 assert_eq "an intact ruleset exits 0" 0 "$rc_ok"
 assert_eq "STATE is OK" "OK" "$(st_field 1)"
@@ -73,9 +73,9 @@ assert_eq "DETAIL counts every ordered pair of the 3 envs" "6/6 pairs" "$(st_fie
 # rest of the table looks perfectly healthy.
 reset_runtime
 apply_isolation
-"$WATCH" --once >/dev/null 2>&1                      # establish OK as the prior state
+"$WATCH" isolation-watch --once >/dev/null 2>&1                      # establish OK as the prior state
 delete_drop_rule 10.10.1.0/24 10.10.2.0/24
-"$WATCH" --once > "$SANDBOX/broken.out" 2>&1
+"$WATCH" isolation-watch --once > "$SANDBOX/broken.out" 2>&1
 rc_broken=$?
 assert_eq "a missing DROP rule exits non-zero" 1 "$rc_broken"
 assert_eq "a missing DROP rule reads FAIL" "FAIL" "$(st_field 1)"
@@ -88,9 +88,9 @@ assert_eq "the FAIL line is still one line" 1 "$(wc -l < "$STATUS" | tr -d ' ')"
 # missing" loop finds nothing missing. That must NOT read as OK.
 reset_runtime
 apply_isolation
-"$WATCH" --once >/dev/null 2>&1
+"$WATCH" isolation-watch --once >/dev/null 2>&1
 nft flush ruleset
-"$WATCH" --once > "$SANDBOX/flushed.out" 2>&1
+"$WATCH" isolation-watch --once > "$SANDBOX/flushed.out" 2>&1
 rc_flushed=$?
 assert_eq "a flushed ruleset exits non-zero" 1 "$rc_flushed"
 assert_eq "a flushed ruleset reads FAIL, not a vacuous OK" "FAIL" "$(st_field 1)"
@@ -104,15 +104,15 @@ assert_contains "the transition records the new and previous state" "$AUDIT" 'is
 assert_contains "the audit timestamp is ISO8601 UTC" "$AUDIT" '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z '
 assert_mode "the audit log is root-only (0600)" 600 "$AUDIT"
 
-"$WATCH" --once >/dev/null 2>&1
-"$WATCH" --once >/dev/null 2>&1
+"$WATCH" isolation-watch --once >/dev/null 2>&1
+"$WATCH" isolation-watch --once >/dev/null 2>&1
 assert_eq "an unchanged state writes nothing (the log must not fill up)" 1 "$(audit_lines)"
 
 delete_drop_rule 10.10.2.0/24 10.10.3.0/24
-"$WATCH" --once >/dev/null 2>&1
+"$WATCH" isolation-watch --once >/dev/null 2>&1
 assert_eq "a state change is logged" 2 "$(audit_lines)"
 assert_contains "the FAIL transition names the missing pair" "$AUDIT" 'isolation-check state=FAIL prev=OK pairs=5/6 missing=development->administration'
-"$WATCH" --once >/dev/null 2>&1
+"$WATCH" isolation-watch --once >/dev/null 2>&1
 assert_eq "a repeated FAIL is not logged again" 2 "$(audit_lines)"
 
 apply_isolation                                       # repairs the ruleset and re-checks
@@ -130,7 +130,7 @@ fi
 # Simulate the reboot by removing the tmpfs directory, which is what a fresh
 # /run gives us. A reader must find nothing (=> UNKNOWN), never last boot's OK.
 apply_isolation
-"$WATCH" --once >/dev/null 2>&1
+"$WATCH" isolation-watch --once >/dev/null 2>&1
 assert_eq "before the reboot the file says OK" "OK" "$(st_field 1)"
 rm -rf /run/appliance
 if [ ! -e "$STATUS" ]; then
@@ -139,20 +139,20 @@ else
   _b "a fresh tmpfs leaves no status file"
 fi
 rm -f "$AUDIT"
-"$WATCH" --once >/dev/null 2>&1
+"$WATCH" isolation-watch --once >/dev/null 2>&1
 assert_contains "the first check after a boot logs the UNKNOWN->OK transition" "$AUDIT" 'state=OK prev=UNKNOWN'
 
 # --- a corrupt status file must not crash the reader --------------------------
 mkdir -p /run/appliance
 printf 'garbage without any tabs at all\n' > "$STATUS"
-"$WATCH" --once > "$SANDBOX/corrupt.out" 2>&1
+"$WATCH" isolation-watch --once > "$SANDBOX/corrupt.out" 2>&1
 assert_eq "an unparsable status file is overwritten with a real verdict" "OK" "$(st_field 1)"
 assert_contains "an unparsable previous state is treated as UNKNOWN" "$AUDIT" 'state=OK prev=UNKNOWN'
 
 # --- concurrent runs -----------------------------------------------------------
 reset_runtime
-"$WATCH" --once >/dev/null 2>&1 &
-"$WATCH" --once >/dev/null 2>&1 &
+"$WATCH" isolation-watch --once >/dev/null 2>&1 &
+"$WATCH" isolation-watch --once >/dev/null 2>&1 &
 wait
 assert_eq "two concurrent checks log the transition exactly once" 1 "$(audit_lines)"
 assert_eq "and still leave a valid status behind" "OK" "$(st_field 1)"
@@ -167,50 +167,50 @@ fi
 # running). A watch that only looked at enabled envs would report OK on exactly
 # the configuration that fence protects.
 new_sandbox
-WATCH="$SANDBOX/host/isolation-watch.sh"
+WATCH="$SANDBOX/src/host.sh"
 cfg_set development_ENABLED 0
 reset_runtime
 apply_isolation
 assert_eq "a disabled env still counts toward the expected pairs" "6/6 pairs" "$(st_field 3)"
 delete_drop_rule 10.10.1.0/24 10.10.2.0/24            # office -> the DISABLED env
-"$WATCH" --once >/dev/null 2>&1
+"$WATCH" isolation-watch --once >/dev/null 2>&1
 rc_dis=$?
 assert_eq "losing the fence around a disabled env is a FAIL" "FAIL" "$(st_field 1)"
 assert_eq "and exits non-zero" 1 "$rc_dis"
 
 # --- an empty environment model is UNKNOWN, never OK ---------------------------
 new_sandbox
-WATCH="$SANDBOX/host/isolation-watch.sh"
+WATCH="$SANDBOX/src/host.sh"
 cfg_set ENVS ""
 reset_runtime
 mkdir -p /run/appliance
-"$WATCH" --once > "$SANDBOX/noenv.out" 2>&1
+"$WATCH" isolation-watch --once > "$SANDBOX/noenv.out" 2>&1
 rc_noenv=$?
 assert_eq "an empty ENVS reads UNKNOWN" "UNKNOWN" "$(st_field 1)"
 assert_eq "an empty ENVS does not exit 0" 2 "$rc_noenv"
 
 # --- timer installation is idempotent -----------------------------------------
 new_sandbox
-WATCH="$SANDBOX/host/isolation-watch.sh"
+WATCH="$SANDBOX/src/host.sh"
 rm -f /etc/crontabs/root
-"$WATCH" --install-timer >/dev/null 2>&1
-"$WATCH" --install-timer >/dev/null 2>&1
+"$WATCH" isolation-watch --install-timer >/dev/null 2>&1
+"$WATCH" isolation-watch --install-timer >/dev/null 2>&1
 assert_eq "re-running the installer leaves exactly one crontab entry" \
-  1 "$(grep -c 'isolation-watch\.sh' /etc/crontabs/root)"
-assert_contains "the default interval is every minute" /etc/crontabs/root '^\* \* \* \* \* .*isolation-watch\.sh --once'
+  1 "$(grep -c 'isolation-watch' /etc/crontabs/root)"
+assert_contains "the default interval is every minute" /etc/crontabs/root '^\* \* \* \* \* .*isolation-watch --once'
 assert_contains "cron output is discarded (the status file is the channel)" /etc/crontabs/root '>/dev/null 2>&1$'
 assert_mode "the root crontab stays 0600" 600 /etc/crontabs/root
 assert_contains "crond is enabled at boot" "$STUB_LOG" 'rc-update add crond default'
 
 cfg_set ISOLATION_WATCH_INTERVAL 300
-"$WATCH" --install-timer >/dev/null 2>&1
-assert_contains "a longer interval becomes a */N schedule" /etc/crontabs/root '^\*/5 \* \* \* \* .*isolation-watch\.sh'
+"$WATCH" isolation-watch --install-timer >/dev/null 2>&1
+assert_contains "a longer interval becomes a */N schedule" /etc/crontabs/root '^\*/5 \* \* \* \* .*isolation-watch'
 assert_eq "changing the interval replaces the entry rather than adding one" \
-  1 "$(grep -c 'isolation-watch\.sh' /etc/crontabs/root)"
+  1 "$(grep -c 'isolation-watch' /etc/crontabs/root)"
 
 cfg_set ISOLATION_WATCH 0
-"$WATCH" --install-timer > "$SANDBOX/off.out" 2>&1
-assert_eq "ISOLATION_WATCH=0 removes the entry" 0 "$(grep -c 'isolation-watch\.sh' /etc/crontabs/root)"
+"$WATCH" isolation-watch --install-timer > "$SANDBOX/off.out" 2>&1
+assert_eq "ISOLATION_WATCH=0 removes the entry" 0 "$(grep -c 'isolation-watch' /etc/crontabs/root)"
 assert_contains "and says out loud what was given up" "$SANDBOX/off.out" 'NOT installed'
 
 # --- systemd hosts get a real timer -------------------------------------------
@@ -222,9 +222,9 @@ mkdir -p "$SANDBOX/sdbin"
 cp "$STUBS/systemctl" "$SANDBOX/sdbin/systemctl"
 cfg_set ISOLATION_WATCH_INTERVAL 30
 env PATH="$SANDBOX/sdbin:/usr/sbin:/usr/bin:/sbin:/bin" STUB_LOG="$SANDBOX/sd.log" \
-  "$SANDBOX/host/isolation-watch.sh" --install-timer > "$SANDBOX/sd.out" 2>&1
+  "$SANDBOX/src/host.sh" isolation-watch --install-timer > "$SANDBOX/sd.out" 2>&1
 assert_contains "a systemd host gets a .timer unit" /etc/systemd/system/appliance-isolation-watch.timer 'OnUnitActiveSec=30s'
-assert_contains "the timer drives a oneshot check" /etc/systemd/system/appliance-isolation-watch.service 'ExecStart=.*isolation-watch\.sh --once'
+assert_contains "the timer drives a oneshot check" /etc/systemd/system/appliance-isolation-watch.service 'ExecStart=.*isolation-watch --once'
 assert_contains "the timer is enabled" "$SANDBOX/sd.log" 'systemctl enable --now appliance-isolation-watch.timer'
 assert_mode "units are 0644" 644 /etc/systemd/system/appliance-isolation-watch.timer
 

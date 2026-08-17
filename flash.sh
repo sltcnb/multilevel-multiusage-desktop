@@ -1,18 +1,18 @@
 #!/bin/sh
 # =============================================================================
-# flash-image.sh — build the appliance image AND flash it to a USB stick
+# flash.sh — step 2 of 3: build the appliance image AND flash it to a USB stick
 # -----------------------------------------------------------------------------
-# The second half of the build-host workflow (setup-image.sh writes config.env;
-# this script produces the bootable stick):
+# The SECOND of three endpoints (./configure.sh wrote config.env; this script
+# turns it into a bootable stick; ./setup.sh then runs on the appliance):
 #
-#   1. build   src/build/make-image.sh (skipped if a fresh qcow2 already exists)
+#   1. build   src/build.sh (skipped if a fresh qcow2 already exists)
 #   2. convert qcow2 -> raw (qemu-img)
 #   3. flash   dd the raw image onto a USB stick you pick from a list
 #
-#   ./flash-image.sh               # interactive: reuse or rebuild, then flash
-#   ./flash-image.sh --build       # force a rebuild even if the qcow2 exists
-#   ./flash-image.sh --image-only  # build + convert, stop before flashing
-#   ./flash-image.sh -h|--help     # usage
+#   ./flash.sh               # interactive: reuse or rebuild, then flash
+#   ./flash.sh --build       # force a rebuild even if the qcow2 exists
+#   ./flash.sh --image-only  # build + convert, stop before flashing
+#   ./flash.sh -h|--help     # usage
 #
 # Runs on the BUILD host (macOS bash 3.2 AND Linux), so: strictly POSIX sh.
 #
@@ -26,8 +26,19 @@
 set -eu
 HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck disable=SC1091
-. "$HERE/src/lib/common.sh"
+. "$HERE/src/lib.sh"
 APP_ROOT="$HERE"  # common.sh assumes the caller lives under src/; we are the root
+
+# The build options (IMG_SIZE, ALPINE_BRANCH, BAKE_CONFIG) were chosen in
+# ./configure.sh and live in config.env; src/build.sh reads them from its
+# ENVIRONMENT, not from config.env, so source and export them here. Anything
+# already set in the environment wins (an explicit override on the command line
+# still takes precedence). No config.env yet just means the build uses defaults.
+if [ -f "$HERE/config.env" ]; then
+  # shellcheck disable=SC1091
+  . "$HERE/config.env"
+  export IMG_SIZE ALPINE_BRANCH BAKE_CONFIG
+fi
 
 OUT_DIR="${OUT_DIR:-$HERE/out}"
 QCOW2="$OUT_DIR/${OUT_IMG:-appliance-alpine.qcow2}"
@@ -38,16 +49,16 @@ DO_FLASH=1
 
 usage() {
   cat <<EOF
-Usage: ./flash-image.sh [--build] [--image-only] [-h|--help]
+Usage: ./flash.sh [--build] [--image-only] [-h|--help]
 
-Build the appliance image (src/build/make-image.sh), convert it to raw and
+Build the appliance image (src/build.sh), convert it to raw and
 flash it onto a USB stick.
 
   --build       force a rebuild even if a qcow2 already exists
   --image-only  build + convert only; do not flash anything
   -h, --help    this help
 
-Environment overrides: OUT_DIR, OUT_IMG (same as src/build/make-image.sh).
+Environment overrides: OUT_DIR, OUT_IMG (same as src/build.sh).
 EOF
 }
 
@@ -100,8 +111,8 @@ EOF
 step "1/3 — Build the appliance image"
 build_image() {
   require_cmds docker
-  log "Building the appliance image (src/build/make-image.sh) ..."
-  sh "$HERE/src/build/make-image.sh"
+  log "Building the appliance image (src/build.sh) ..."
+  sh "$HERE/src/build.sh"
 }
 
 if [ "$FORCE_BUILD" = "1" ] || [ ! -f "$QCOW2" ]; then
@@ -224,7 +235,7 @@ else
   udisksctl power-off -b "$TARGET" 2>/dev/null || true
 fi
 ok "Stick flashed. Remove it, boot the target machine from it — the installer"
-ok "auto-clones to the internal disk, then ./setup-machine.sh takes over."
+ok "auto-clones to the internal disk, then ./setup.sh takes over (step 3 of 3)."
 
 if ask_yn "Delete the 4G intermediate raw image ($RAW)?" 1; then
   rm -f "$RAW" && ok "Removed $RAW"

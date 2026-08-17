@@ -13,7 +13,7 @@ echo "== host/compliance-check.sh =="
 new_sandbox
 
 # Unprovisioned host: enabled envs have no domains, no appliance_isol table.
-"$SANDBOX/host/compliance-check.sh" > "$SANDBOX/comp.out" 2>&1; rc=$?
+"$SANDBOX/src/host.sh" compliance-check > "$SANDBOX/comp.out" 2>&1; rc=$?
 
 if [ "$rc" -ne 0 ]; then _g "exits non-zero when the machine is not compliant"; else
   _b "exits non-zero when the machine is not compliant"; sed 's/^/        /' "$SANDBOX/comp.out"; fi
@@ -28,12 +28,12 @@ else
 fi
 
 # --gate drops a boot-blocking marker on failure ...
-"$SANDBOX/host/compliance-check.sh" --gate > "$SANDBOX/comp-gate.out" 2>&1 || true
+"$SANDBOX/src/host.sh" compliance-check --gate > "$SANDBOX/comp-gate.out" 2>&1 || true
 if [ -f /run/appliance/NONCOMPLIANT ]; then _g "--gate drops the boot-block marker on failure"; else
   _b "--gate drops the boot-block marker on failure"; fi
 
 # The operator menu offers it as step 8.
-"$SANDBOX/setup-machine.sh" </dev/null > "$SANDBOX/menu.out" 2>&1
+"$SANDBOX/setup.sh" </dev/null > "$SANDBOX/menu.out" 2>&1
 assert_contains "the setup menu offers the compliance check (step 8)" "$SANDBOX/menu.out" '8\) Compliance check'
 assert_contains "running step 8 dispatches to compliance-check.sh"    "$SANDBOX/menu.out" 'compliance-check.sh'
 

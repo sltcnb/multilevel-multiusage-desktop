@@ -8,16 +8,16 @@ echo "== lib/common.sh =="
 new_sandbox
 # common.sh derives APP_ROOT from $0's parent, so source it via a script that
 # lives one level down, exactly like the real callers do.
-cat > "$SANDBOX/host/probe.sh" <<'EOF'
+cat > "$SANDBOX/src/probe.sh" <<'EOF'
 #!/bin/sh
 set -eu
 HERE="$(cd "$(dirname "$0")" && pwd)"
-. "$HERE/../lib/common.sh"
+. "$HERE/lib.sh"
 load_config
 "$@"
 EOF
-chmod +x "$SANDBOX/host/probe.sh"
-probe() { "$SANDBOX/host/probe.sh" "$@"; }
+chmod +x "$SANDBOX/src/probe.sh"
+probe() { "$SANDBOX/src/probe.sh" "$@"; }
 
 # --- the environment model ---------------------------------------------------
 assert_eq "env_index: position is 1-based and follows \$ENVS order" \

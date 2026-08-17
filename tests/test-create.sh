@@ -35,7 +35,7 @@ PY
 }
 
 new_sandbox
-"$SANDBOX/environments/create.sh" > "$SANDBOX/create.out" 2>&1
+"$SANDBOX/src/environments.sh" create > "$SANDBOX/create.out" 2>&1
 create_rc=$?
 assert_eq "create.sh completes for the default three-env config" 0 "$create_rc"
 
@@ -118,24 +118,24 @@ assert_mode "the seed staging directory is root-only" 700 "$SANDBOX/cache/seed-o
 
 # --- idempotency + RECREATE ---------------------------------------------------
 : > "$STUB_LOG"
-"$SANDBOX/environments/create.sh" > "$SANDBOX/create2.out" 2>&1
+"$SANDBOX/src/environments.sh" create > "$SANDBOX/create2.out" 2>&1
 assert_contains "a second run skips existing VMs" "$SANDBOX/create2.out" 'already exists — skipping'
 assert_not_contains "a second run does not re-run virt-install" "$STUB_LOG" 'virt-install .*--name office '
 : > "$STUB_LOG"
-RECREATE=office "$SANDBOX/environments/create.sh" > "$SANDBOX/create3.out" 2>&1
+RECREATE=office "$SANDBOX/src/environments.sh" create > "$SANDBOX/create3.out" 2>&1
 assert_contains "RECREATE=<env> rebuilds only that env" "$STUB_LOG" 'virt-install .*--name office '
 assert_not_contains "RECREATE=<env> leaves the others alone" "$STUB_LOG" 'virt-install .*--name development '
 
 # --- supply-chain guards ------------------------------------------------------
 new_sandbox
-"$SANDBOX/environments/create.sh" > "$SANDBOX/nopin.out" 2>&1
+"$SANDBOX/src/environments.sh" create > "$SANDBOX/nopin.out" 2>&1
 assert_contains "an unpinned base image warns but proceeds by default" "$SANDBOX/nopin.out" 'no SHA256 pinned'
 new_sandbox
 cfg_set REQUIRE_IMG_SHA256 1
-assert_fails "REQUIRE_IMG_SHA256=1 makes a missing pin a hard error" "$SANDBOX/environments/create.sh"
+assert_fails "REQUIRE_IMG_SHA256=1 makes a missing pin a hard error" "$SANDBOX/src/environments.sh" create
 new_sandbox
 cfg_set UBUNTU_IMG_SHA256 "0000000000000000000000000000000000000000000000000000000000000000"
-"$SANDBOX/environments/create.sh" > "$SANDBOX/badsha.out" 2>&1
+"$SANDBOX/src/environments.sh" create > "$SANDBOX/badsha.out" 2>&1
 assert_contains "a mismatched pin aborts" "$SANDBOX/badsha.out" 'SHA256 MISMATCH'
 if [ -f "$SANDBOX/images/base-ubuntu.img" ]; then
   _b "a mismatched image is deleted so it cannot be reused"
@@ -146,10 +146,10 @@ new_sandbox
 cfg_set office_INTUNE 1
 cfg_set MS_GPG_FPR ""
 assert_fails "a blanked Microsoft key fingerprint refuses to build the seed" \
-  "$SANDBOX/environments/create.sh"
+  "$SANDBOX/src/environments.sh" create
 new_sandbox
 cfg_set development_INTUNE 1     # arch env — Intune is Ubuntu-only
-assert_fails "INTUNE=1 on a non-Ubuntu env is rejected" "$SANDBOX/environments/create.sh"
+assert_fails "INTUNE=1 on a non-Ubuntu env is rejected" "$SANDBOX/src/environments.sh" create
 
 # --- integrations wire in correctly ------------------------------------------
 new_sandbox
@@ -159,7 +159,7 @@ cfg_set office_WAZUH 1
 cfg_set WAZUH_MANAGER "wazuh.example.test"
 cfg_set APT_MIRROR "http://mirror.example.test/ubuntu"
 cfg_set APT_PROXY "http://10.10.1.1:3142"
-"$SANDBOX/environments/create.sh" > "$SANDBOX/int.out" 2>&1
+"$SANDBOX/src/environments.sh" create > "$SANDBOX/int.out" 2>&1
 extract_userdata "$SANDBOX/images/office-seed.iso" "$SANDBOX/int-ud.yaml"
 assert_ok "user-data with every integration on is still valid YAML" yaml_ok "$SANDBOX/int-ud.yaml"
 assert_contains "the Microsoft key fingerprint is verified before use" "$SANDBOX/int-ud.yaml" 'BC528686B50D79E339D3721CEB3E94ADBE1229CF'
@@ -223,14 +223,14 @@ mirror_ubuntu_image >/dev/null
 mirror_ubuntu_sums vendor@example.test
 cfg_set UBUNTU_IMG_GPG_FPR "$VENDOR_FPR"
 cfg_set IMG_GPG_KEYRING "$SANDBOX/vendor-keyring.gpg"
-"$SANDBOX/environments/create.sh" > "$SANDBOX/gpg-ok.out" 2>&1
+"$SANDBOX/src/environments.sh" create > "$SANDBOX/gpg-ok.out" 2>&1
 assert_eq "strict mode: a vendor-signed checksum file verifies" 0 "$?"
 assert_contains "strict mode: the sums file is fetched from the image's own directory" "$STUB_LOG" 'wget .*jammy/current/SHA256SUMS$'
 assert_contains "strict mode: the detached signature is fetched too" "$STUB_LOG" 'wget .*jammy/current/SHA256SUMS\.gpg'
 assert_contains "strict mode: trust is gated on the pinned fingerprint" "$SANDBOX/gpg-ok.out" 'signature verified against pinned key'
 assert_contains "strict mode: the image hash comes from the VERIFIED sums file" "$SANDBOX/gpg-ok.out" 'base-ubuntu.img: SHA256 verified'
 : > "$STUB_LOG"
-"$SANDBOX/environments/create.sh" > "$SANDBOX/gpg-cached.out" 2>&1
+"$SANDBOX/src/environments.sh" create > "$SANDBOX/gpg-cached.out" 2>&1
 assert_eq "strict mode: a cached image still verifies on re-run" 0 "$?"
 assert_contains "strict mode: the cached image is re-verified against a fresh signature fetch" "$STUB_LOG" 'SHA256SUMS\.gpg'
 
@@ -243,7 +243,7 @@ mirror_ubuntu_image >/dev/null
 mirror_ubuntu_sums mallory@example.test
 cfg_set UBUNTU_IMG_GPG_FPR "$VENDOR_FPR"
 cfg_set IMG_GPG_KEYRING "$SANDBOX/vendor-keyring.gpg"
-"$SANDBOX/environments/create.sh" > "$SANDBOX/gpg-wrong.out" 2>&1
+"$SANDBOX/src/environments.sh" create > "$SANDBOX/gpg-wrong.out" 2>&1
 if [ "$?" -ne 0 ]; then _g "a valid signature from the WRONG key is refused"; else _b "a valid signature from the WRONG key is refused"; fi
 assert_contains "wrong key: the refusal names the pinned key" "$SANDBOX/gpg-wrong.out" 'not by the pinned key'
 if [ -f "$SANDBOX/images/base-ubuntu.img" ]; then
@@ -259,14 +259,14 @@ printf '%s *jammy-server-cloudimg-amd64.img\n' \
   "$(sha256sum "$MIRROR/jammy-server-cloudimg-amd64.img" | awk '{print $1}')" > "$MIRROR/SHA256SUMS"
 cfg_set UBUNTU_IMG_GPG_FPR "$VENDOR_FPR"
 cfg_set IMG_GPG_KEYRING "$SANDBOX/vendor-keyring.gpg"
-"$SANDBOX/environments/create.sh" > "$SANDBOX/gpg-nosig.out" 2>&1
+"$SANDBOX/src/environments.sh" create > "$SANDBOX/gpg-nosig.out" 2>&1
 if [ "$?" -ne 0 ]; then _g "a missing detached signature is refused"; else _b "a missing detached signature is refused"; fi
 assert_contains "missing signature: the refusal says why" "$SANDBOX/gpg-nosig.out" 'SHA256SUMS\.gpg missing'
 
 # empty-but-set <OS>_IMG_GPG_FPR is a refused downgrade, not "feature off"
 new_sandbox
 cfg_set UBUNTU_IMG_GPG_FPR ""
-"$SANDBOX/environments/create.sh" > "$SANDBOX/gpg-empty.out" 2>&1
+"$SANDBOX/src/environments.sh" create > "$SANDBOX/gpg-empty.out" 2>&1
 if [ "$?" -ne 0 ]; then _g "an empty-but-set <OS>_IMG_GPG_FPR dies"; else _b "an empty-but-set <OS>_IMG_GPG_FPR dies"; fi
 assert_contains "empty fpr: the message calls it a refused downgrade" "$SANDBOX/gpg-empty.out" 'refused downgrade'
 
@@ -277,7 +277,7 @@ img_sha="$(mirror_ubuntu_image)"
 cfg_set UBUNTU_IMG_GPG_FPR "$VENDOR_FPR"
 cfg_set IMG_GPG_KEYRING "$SANDBOX/vendor-keyring.gpg"
 cfg_set UBUNTU_IMG_SHA256 "$img_sha"
-"$SANDBOX/environments/create.sh" > "$SANDBOX/gpg-pin.out" 2>&1
+"$SANDBOX/src/environments.sh" create > "$SANDBOX/gpg-pin.out" 2>&1
 assert_eq "a hand-pinned SHA256 wins over the signature path" 0 "$?"
 assert_not_contains "pin precedence: the sums file is never fetched" "$STUB_LOG" 'SHA256SUMS'
 
@@ -292,7 +292,7 @@ cfg_set REQUIRE_IMG_SHA256 1
 cfg_set UBUNTU_IMG_GPG_FPR "$VENDOR_FPR"   # gpg pin must satisfy REQUIRE_IMG_SHA256
 cfg_set IMG_GPG_KEYRING "$SANDBOX/vendor-keyring.gpg"
 cfg_set ARCH_IMG_SHA256 "$arch_sha"        # the arch envs pin a hash instead
-"$SANDBOX/environments/create.sh" > "$SANDBOX/gpg-req.out" 2>&1
+"$SANDBOX/src/environments.sh" create > "$SANDBOX/gpg-req.out" 2>&1
 assert_eq "REQUIRE_IMG_SHA256=1 is satisfied by a gpg pin" 0 "$?"
 
 summary

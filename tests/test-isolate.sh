@@ -10,7 +10,7 @@ echo "== environments/isolate.sh =="
 new_sandbox
 NFT_OUT=/etc/nftables.d/appliance-isolation.nft
 
-run_isolate() { "$SANDBOX/environments/isolate.sh" > "$SANDBOX/isolate.out" 2>&1; }
+run_isolate() { "$SANDBOX/src/environments.sh" isolate > "$SANDBOX/isolate.out" 2>&1; }
 
 # --- happy path: all three envs reachable outward, blocked from each other ----
 nft flush ruleset 2>/dev/null || true
@@ -54,7 +54,7 @@ assert_contains "reports the cross-env block PASS" "$SANDBOX/isolate.out" 'canno
 # non-zero exit, not a warning that scrolls past in a first-boot log.
 new_sandbox
 nft flush ruleset 2>/dev/null || true
-STUB_PEER_RC=0 "$SANDBOX/environments/isolate.sh" > "$SANDBOX/breach.out" 2>&1
+STUB_PEER_RC=0 "$SANDBOX/src/environments.sh" isolate > "$SANDBOX/breach.out" 2>&1
 breach_rc=$?
 assert_contains "a reachable peer env is reported as FAIL" "$SANDBOX/breach.out" 'cannot reach .* net -> FAIL'
 if [ "$breach_rc" -ne 0 ]; then
@@ -66,7 +66,7 @@ fi
 # --- guest agent not up yet: skipped, not failed -----------------------------
 new_sandbox
 nft flush ruleset 2>/dev/null || true
-STUB_AGENT=down "$SANDBOX/environments/isolate.sh" > "$SANDBOX/agentdown.out" 2>&1
+STUB_AGENT=down "$SANDBOX/src/environments.sh" isolate > "$SANDBOX/agentdown.out" 2>&1
 agent_rc=$?
 assert_contains "an unreachable guest agent is SKIPPED" "$SANDBOX/agentdown.out" 'SKIPPED \(guest agent not ready\)'
 assert_eq "skips alone do not fail the run" 0 "$agent_rc"
@@ -74,7 +74,7 @@ assert_eq "skips alone do not fail the run" 0 "$agent_rc"
 # --- a guest command that never finishes must not silently pass --------------
 new_sandbox
 nft flush ruleset 2>/dev/null || true
-GUEST_EXEC_TIMEOUT=2 STUB_AGENT=slow "$SANDBOX/environments/isolate.sh" > "$SANDBOX/slow.out" 2>&1
+GUEST_EXEC_TIMEOUT=2 STUB_AGENT=slow "$SANDBOX/src/environments.sh" isolate > "$SANDBOX/slow.out" 2>&1
 assert_contains "a never-completing in-guest command times out explicitly" \
   "$SANDBOX/slow.out" 'did not finish in 2s'
 
@@ -83,7 +83,7 @@ new_sandbox
 cfg_set administration_EGRESS_MODE whitelist
 cfg_set administration_EGRESS_ALLOW "1.1.1.1 9.9.9.9"
 nft flush ruleset 2>/dev/null || true
-STUB_AGENT=down "$SANDBOX/environments/isolate.sh" > "$SANDBOX/wl.out" 2>&1
+STUB_AGENT=down "$SANDBOX/src/environments.sh" isolate > "$SANDBOX/wl.out" 2>&1
 cp "$NFT_OUT" "$SANDBOX/wl.nft"
 assert_ok "whitelist ruleset loads into the kernel" nft -f "$SANDBOX/wl.nft"
 assert_contains "whitelist permits the listed destinations" "$SANDBOX/wl.nft" 'ip daddr \{ 1.1.1.1,9.9.9.9 \} accept'
@@ -96,13 +96,13 @@ assert_not_contains "a whitelisted env gets no blanket WAN accept" "$SANDBOX/wl.
 new_sandbox
 cfg_set administration_EGRESS_ALLOW "1.1.1.1"   # allow-list set, mode left "all"
 assert_fails "an allow-list with EGRESS_MODE=all is refused, not silently ignored" \
-  "$SANDBOX/environments/isolate.sh"
+  "$SANDBOX/src/environments.sh" isolate
 
 # --- a DISABLED env keeps its fence, but loses its internet ------------------
 new_sandbox
 cfg_set development_ENABLED 0
 nft flush ruleset 2>/dev/null || true
-STUB_AGENT=down "$SANDBOX/environments/isolate.sh" > "$SANDBOX/dis.out" 2>&1
+STUB_AGENT=down "$SANDBOX/src/environments.sh" isolate > "$SANDBOX/dis.out" 2>&1
 cp "$NFT_OUT" "$SANDBOX/dis.nft"
 assert_contains "a disabled env stays fenced off from the others" "$SANDBOX/dis.nft" 'ip saddr 10.10.1.0/24 ip daddr 10.10.2.0/24 counter drop'
 assert_contains "a disabled env stays fenced in the other direction too" "$SANDBOX/dis.nft" 'ip saddr 10.10.2.0/24 ip daddr 10.10.1.0/24 counter drop'
@@ -117,7 +117,7 @@ cfg_set ENVS "office development administration research"
 cfg_set research_ENABLED 1
 cfg_set research_OS arch
 nft flush ruleset 2>/dev/null || true
-STUB_AGENT=down "$SANDBOX/environments/isolate.sh" > "$SANDBOX/four.out" 2>&1
+STUB_AGENT=down "$SANDBOX/src/environments.sh" isolate > "$SANDBOX/four.out" 2>&1
 cp "$NFT_OUT" "$SANDBOX/four.nft"
 assert_ok "four-env ruleset loads into the kernel" nft -f "$SANDBOX/four.nft"
 assert_eq "all 12 ordered subnet pairs are dropped for 4 envs" \

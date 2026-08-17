@@ -11,17 +11,17 @@ set -u
 # the point of half these tests: audit_event must never abort its caller, so the
 # probe reports on stderr that it survived the call.
 mk_probe() {
-  cat > "$SANDBOX/host/probe-audit.sh" <<'EOF'
+  cat > "$SANDBOX/src/probe-audit.sh" <<'EOF'
 #!/bin/sh
 set -eu
 HERE="$(cd "$(dirname "$0")" && pwd)"
-. "$HERE/../lib/common.sh"
+. "$HERE/lib.sh"
 "$@"
 echo "CALLER-CONTINUED" >&2
 EOF
-  chmod +x "$SANDBOX/host/probe-audit.sh"
+  chmod +x "$SANDBOX/src/probe-audit.sh"
 }
-probe() { "$SANDBOX/host/probe-audit.sh" "$@"; }
+probe() { "$SANDBOX/src/probe-audit.sh" "$@"; }
 
 # Keep the log inside the sandbox: the suite runs as root in a container, where
 # the real /var/log path would leak state between test files.
@@ -96,8 +96,8 @@ new_sandbox; mk_probe
 AUDIT_LOG="$SANDBOX/notadir/audit.log"; AUDIT_SPOOL="$SANDBOX/notadir/spool"
 export AUDIT_LOG AUDIT_SPOOL
 assert_ok "audit_event returns 0 when the log cannot be created" \
-  "$SANDBOX/host/probe-audit.sh" audit_event usb-route env=office
-err="$("$SANDBOX/host/probe-audit.sh" audit_event usb-route env=office 2>&1 >/dev/null || true)"
+  "$SANDBOX/src/probe-audit.sh" audit_event usb-route env=office
+err="$("$SANDBOX/src/probe-audit.sh" audit_event usb-route env=office 2>&1 >/dev/null || true)"
 case "$err" in
   *CALLER-CONTINUED*) _g "a set -e caller carries on past a failed audit write" ;;
   *) _b "a set -e caller carries on past a failed audit write"; printf '        got: %s\n' "$err" ;;
@@ -107,7 +107,7 @@ case "$err" in
   *) _b "and the failure is at least reported" ;;
 esac
 assert_ok "audit_tail on a missing log is not an error either" \
-  "$SANDBOX/host/probe-audit.sh" audit_tail 5
+  "$SANDBOX/src/probe-audit.sh" audit_tail 5
 
 echo
 echo "== rotation keeps the appliance disk bounded =="
@@ -131,7 +131,7 @@ echo
 echo "== host/usb-to-vm.sh records where the peripheral went =="
 new_sandbox; mk_probe; audit_paths
 touch "$SANDBOX/stub-state/dom-office" "$SANDBOX/stub-state/dom-development" "$SANDBOX/stub-state/dom-administration"
-printf '2\n' | "$SANDBOX/host/usb-to-vm.sh" > "$SANDBOX/usb.out" 2>&1
+printf '2\n' | "$SANDBOX/src/host.sh" usb-to-vm > "$SANDBOX/usb.out" 2>&1
 assert_contains "the route is audited with vendor, product and env" "$AL" \
   '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z usb-route vendor=1050 product=0407 env=development'
 # Compartmentalisation is the control being evidenced: the record must also say
@@ -143,7 +143,7 @@ assert_eq "one route is one line" 1 "$(wc -l < "$AL" | tr -d ' ')"
 # A rejected choice routes nothing, so it must audit nothing.
 new_sandbox; mk_probe; audit_paths
 touch "$SANDBOX/stub-state/dom-office"
-printf 'x\n' | "$SANDBOX/host/usb-to-vm.sh" > /dev/null 2>&1
+printf 'x\n' | "$SANDBOX/src/host.sh" usb-to-vm > /dev/null 2>&1
 if [ -s "$AL" ]; then _b "an invalid choice records no route"; else _g "an invalid choice records no route"; fi
 
 echo
@@ -156,7 +156,7 @@ if id kiosk >/dev/null 2>&1; then
   chmod 600 "$AL" 2>/dev/null || true
   kuid="$(id -u kiosk)"
   su kiosk -s /bin/sh -c \
-    "AUDIT_LOG='$AL' AUDIT_SPOOL='$ASP' '$SANDBOX/host/probe-audit.sh' audit_event portal-login result=opened" \
+    "AUDIT_LOG='$AL' AUDIT_SPOOL='$ASP' '$SANDBOX/src/probe-audit.sh' audit_event portal-login result=opened" \
     >/dev/null 2>&1
   assert_fails "the kiosk user still cannot read the log" \
     su kiosk -s /bin/sh -c "cat '$AL'"
@@ -197,7 +197,7 @@ echo
 echo "== host/captive-portal.sh audits the login from the kiosk side =="
 new_sandbox; mk_probe; audit_paths
 PORTAL_BROWSER="sh"; export PORTAL_BROWSER   # skip the browser install in CI
-"$SANDBOX/host/captive-portal.sh" > "$SANDBOX/portal.out" 2>&1
+"$SANDBOX/src/host.sh" captive-portal > "$SANDBOX/portal.out" 2>&1
 assert_eq "captive-portal.sh succeeds" 0 "$?"
 assert_mode "it provisions the spool for the kiosk helper" 1733 "$ASP"
 KH="$(getent passwd kiosk | cut -d: -f6)"; KH="${KH:-/home/kiosk}"
