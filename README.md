@@ -357,6 +357,11 @@ the radio up.
   server by `keyd`.
 - `Super+p` — re-open the captive portal when the Wi-Fi session times out.
 - `Super+y` — route a plugged YubiKey (or any USB device) to a chosen VM.
+- `Super+w` — add a new Wi-Fi network (e.g. working from home). The kiosk user
+  does this itself with no root: it's in the `netdev` control group, so the
+  helper drives `wpa_cli` against wpa_supplicant, and the network is saved and
+  reconnects on the next boot. (Wi-Fi hardware must be present and wpa_supplicant
+  running — i.e. `host.sh wifi` has run at least once.)
 - `Super+Enter` — an unprivileged shell (kiosk user).
 
 Everything else is automatic: autologin, VM autostart, and the firewall all

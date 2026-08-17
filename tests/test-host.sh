@@ -95,6 +95,12 @@ assert_contains "Super+3 switches to the third env" "$I3" 'bindsym \$mod\+3 work
 assert_contains "each env's viewer is launched" "$I3" "vm-viewer.sh administration"
 assert_contains "the viewer is matched onto its numbered workspace" "$I3" 'move to workspace "2: DEVELOPMENT"'
 assert_contains "boot lands on the first enabled env" "$I3" 'i3-msg workspace number 1'
+# Super+w lets the unprivileged kiosk add a Wi-Fi network (work-from-home).
+assert_contains "Super+w is bound to the add-Wi-Fi helper" "$I3" 'bindsym \$mod\+w .*Add Wi-Fi'
+assert_contains "the bind points at the kiosk add-wifi helper (path baked)" "$I3" "$KH/add-wifi.sh"
+assert_contains "the add-wifi helper is written to the kiosk home" "$KH/add-wifi.sh" 'wpa_cli add_network'
+assert_eq "the add-wifi helper is owned by the kiosk user" "kiosk" "$(stat -c '%U' "$KH/add-wifi.sh")"
+assert_ok "the add-wifi helper is executable" test -x "$KH/add-wifi.sh"
 # The trust bar is the ANSSI requirement that you always know which environment
 # you are in — a viewer must never be able to cover it.
 assert_contains "a viewer is prevented from going fullscreen over the trust bar" "$I3" 'fullscreen disable'
@@ -209,6 +215,9 @@ assert_not_contains "the plaintext passphrase is never written" /etc/wpa_supplic
 assert_mode "wpa_supplicant.conf is root-only" 600 /etc/wpa_supplicant/wpa_supplicant.conf
 # A randomised MAC would lose the captive-portal session on every reassociation.
 assert_contains "the hardware MAC is pinned for the captive portal" /etc/wpa_supplicant/wpa_supplicant.conf 'mac_addr=0'
+# The control socket is group netdev so the unprivileged kiosk (Super+w) can add
+# networks with wpa_cli — not wheel, which would imply admin privilege.
+assert_contains "the wpa control socket is group netdev (kiosk-manageable)" /etc/wpa_supplicant/wpa_supplicant.conf 'ctrl_interface_group=netdev'
 assert_contains "the uplink is recorded for isolate.sh" "$SANDBOX/config.env" '^WAN_IFACE="wlan0"$'
 "$SANDBOX/src/host.sh" wifi > /dev/null 2>&1
 assert_eq "re-running does not duplicate the interfaces stanza" \

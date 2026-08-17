@@ -341,7 +341,11 @@ if ! id "$KIOSK_USER" >/dev/null 2>&1; then
   log "Creating unprivileged kiosk user '$KIOSK_USER' ..."
   adduser -D -s /bin/bash "$KIOSK_USER" 2>/dev/null || useradd -m -s /bin/bash "$KIOSK_USER" 2>/dev/null || true
 fi
-for g in libvirt libvirtd kvm video input; do addgroup "$KIOSK_USER" "$g" 2>/dev/null || usermod -aG "$g" "$KIOSK_USER" 2>/dev/null || true; done
+# netdev = the wpa_supplicant control-interface group (see host.sh wifi), so the
+# unprivileged kiosk can add a Wi-Fi network at runtime via wpa_cli (Super+w) —
+# no root, no sudo. Create it first so membership can be granted.
+addgroup -S netdev 2>/dev/null || groupadd -r netdev 2>/dev/null || true
+for g in libvirt libvirtd kvm video input netdev; do addgroup "$KIOSK_USER" "$g" 2>/dev/null || usermod -aG "$g" "$KIOSK_USER" 2>/dev/null || true; done
 passwd -u "$KIOSK_USER" 2>/dev/null || true
 KIOSK_HOME="$(getent passwd "$KIOSK_USER" | cut -d: -f6)"; KIOSK_HOME="${KIOSK_HOME:-/home/$KIOSK_USER}"
 
@@ -804,6 +808,43 @@ PORTAL_SH="$KIOSK_HOME/portal-login.sh"
 WS_PORTAL=8
 WS_SHELL=9
 WS_USB=7
+WS_WIFI=6
+
+# Super+w "add a Wi-Fi network" helper for the UNPRIVILEGED kiosk user. It talks
+# to wpa_supplicant over its netdev-group control socket via wpa_cli — no root,
+# no sudo — so someone can join a new (e.g. home) network from the desktop. The
+# network is saved (update_config=1) and reconnects on the next boot.
+WIFI_SH="$KIOSK_HOME/add-wifi.sh"
+cat > "$WIFI_SH" <<'WIFI'
+#!/bin/sh
+# add-wifi.sh — add a Wi-Fi network as the unprivileged kiosk user (Super+w).
+echo "=== Add a Wi-Fi network ==="
+printf 'Network name (SSID): '; read -r ssid
+[ -n "$ssid" ] || { echo "No SSID given — aborting."; sleep 2; exit 1; }
+printf 'Password (leave empty for an open network): '
+stty -echo 2>/dev/null; read -r psk; stty echo 2>/dev/null; echo
+if ! wpa_cli status >/dev/null 2>&1; then
+  echo "Wi-Fi is not available (no wireless hardware / wpa_supplicant not running)."
+  echo "Press Enter to close."; read -r _; exit 1
+fi
+id="$(wpa_cli add_network 2>/dev/null | tail -1)"
+case "$id" in ''|*[!0-9]*) echo "Could not add a network (wpa_cli error)."; sleep 3; exit 1 ;; esac
+wpa_cli set_network "$id" ssid "\"$ssid\"" >/dev/null 2>&1
+if [ -n "$psk" ]; then
+  wpa_cli set_network "$id" psk "\"$psk\"" >/dev/null 2>&1
+else
+  wpa_cli set_network "$id" key_mgmt NONE >/dev/null 2>&1
+fi
+wpa_cli enable_network "$id" >/dev/null 2>&1
+wpa_cli select_network "$id" >/dev/null 2>&1
+wpa_cli save_config  >/dev/null 2>&1   # persist for next boot (update_config=1)
+echo; echo "Added '$ssid'. Associating ..."; sleep 6
+wpa_cli status 2>/dev/null | grep -E 'wpa_state=|^ssid=|ip_address=' || true
+echo; echo "Saved. No ip_address yet? It will connect on the next boot (or move"
+echo "closer / re-check the password). Press Enter to close."; read -r _
+WIFI
+chmod +x "$WIFI_SH"
+chown "$KIOSK_USER:$KIOSK_USER" "$WIFI_SH" 2>/dev/null || true
 
 log "Writing $I3_DIR/config (per enabled environment) ..."
 # Static header (quoted heredoc keeps i3 $vars literal).
@@ -830,12 +871,17 @@ for_window [class="(?i)xterm"] floating enable, border normal
 # itself is delivered by keyd (below) so it survives the SPICE keyboard grab;
 # this i3 binding only covers the case where no viewer holds the keyboard.
 bindsym $mod+y workspace number WS_USB_N; exec --no-startup-id xterm -T "Route YubiKey" -e HOMEDIR_APP/src/host.sh usb-to-vm
+# Super+w = add a new Wi-Fi network (e.g. working from home) as the unprivileged
+# kiosk user, via wpa_cli. No root needed (kiosk is in the netdev control group).
+bindsym $mod+w workspace number WS_WIFI_N; exec --no-startup-id xterm -T "Add Wi-Fi" -e WIFI_HELPER
 EOF
 # Bake the real appliance path + overlay workspace numbers into the header
 # (it is a quoted heredoc, so nothing expanded there).
 sed -i -e "s|HOMEDIR_APP|$APP_ROOT|" \
+       -e "s|WIFI_HELPER|$WIFI_SH|" \
        -e "s|WS_SHELL_N|$WS_SHELL|" \
-       -e "s|WS_USB_N|$WS_USB|" "$I3_DIR/config"
+       -e "s|WS_USB_N|$WS_USB|" \
+       -e "s|WS_WIFI_N|$WS_WIFI|" "$I3_DIR/config"
 
 # Per ENABLED env: title-match the viewer to its numbered workspace, bind
 # Super+<idx>, and launch its viewer. Workspaces are named "<idx>: <ENV>" for the
@@ -1442,7 +1488,9 @@ mkdir -p "$WPA_DIR"
 log "Writing $WPA_CONF (PSK hashed) ..."
 {
   echo "ctrl_interface=/var/run/wpa_supplicant"
-  echo "ctrl_interface_group=wheel"
+  # netdev, not wheel: lets the unprivileged kiosk manage networks with wpa_cli
+  # (the Super+w "add Wi-Fi" helper) without granting any wheel/sudo privilege.
+  echo "ctrl_interface_group=netdev"
   echo "country=${WIFI_COUNTRY:-00}"
   echo "update_config=1"
   # STABLE MAC (critical for captive portals): a captive portal authorizes the
