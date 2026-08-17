@@ -388,22 +388,23 @@ alpine-make-vm-image \
 if [ -n "${BAKE_ISO:-}" ]; then
   [ -f "$BAKE_ISO" ] || { echo "[x] BAKE_ISO=$BAKE_ISO not present in the container"; exit 1; }
   echo "[*] Baking $(basename "$BAKE_ISO") into the image at ${BAKE_ISO_DEST} ..."
-  lodev="$(losetup --partscan --find --show /work/appliance.raw)"
-  partx -a "$lodev" 2>/dev/null || true
-  root_part=""
-  for _p in "${lodev}p2" "${lodev}p3" "${lodev}p1"; do
-    [ -b "$_p" ] || continue
-    [ "$(blkid -o value -s TYPE "$_p" 2>/dev/null)" = "ext4" ] && { root_part="$_p"; break; }
-  done
-  [ -n "$root_part" ] || { echo "[x] no ext4 root partition found to bake into"; losetup -d "$lodev"; exit 1; }
+  # Attach ONLY the Linux root partition via a loop device at its byte offset,
+  # read from the GPT (Linux-filesystem type GUID 0FC63DAF-...). This avoids
+  # partition-node scanning (losetup --partscan / nbd pN nodes do not appear in
+  # this container's kernel), which is why a whole-disk attach found no ext4.
+  _start="$(sfdisk -d /work/appliance.raw | grep -i 'type=0FC63DAF' | sed 's/.*start=[[:space:]]*//; s/,.*//' | head -1)"
+  [ -n "$_start" ] || { echo "[x] could not locate the Linux root partition in the GPT"; sfdisk -d /work/appliance.raw; exit 1; }
+  _off=$((_start * 512))
+  _lo="$(losetup --offset "$_off" --find --show /work/appliance.raw)"
+  [ -n "$_lo" ] || { echo "[x] losetup --offset failed"; exit 1; }
+  [ "$(blkid -o value -s TYPE "$_lo" 2>/dev/null)" = "ext4" ] || { echo "[x] partition at offset is not ext4"; losetup -d "$_lo"; exit 1; }
   mkdir -p /mnt/imgroot
-  mount "$root_part" /mnt/imgroot
+  mount "$_lo" /mnt/imgroot
   mkdir -p "/mnt/imgroot$(dirname "$BAKE_ISO_DEST")"
   cp "$BAKE_ISO" "/mnt/imgroot$BAKE_ISO_DEST"
   sync
   umount /mnt/imgroot
-  partx -d "$lodev" 2>/dev/null || true
-  losetup -d "$lodev"
+  losetup -d "$_lo"
   echo "[+] ISO baked ($(du -h "$BAKE_ISO" | cut -f1))."
 fi
 
