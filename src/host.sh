@@ -1384,19 +1384,23 @@ chmod +x /usr/local/bin/vmswitch
 # Super/Meta is deliberately NOT used for switching: it is left to the guest
 # (Windows uses Super+1..9 for the taskbar). Ctrl+Alt+<number row> is not a VT
 # switch (those are the F-keys), so it is safe to bind.
+# keyd v2.x has NO generic 'control'/'alt'/'meta' modifier tokens — those are
+# rejected as "not a valid key" and the whole binding is silently dropped (which
+# is exactly why every hotkey was dead). It only accepts the side-specific key
+# names from `keyd list-keys`: leftcontrol/leftalt/leftmeta. Use those.
 {
   echo "[ids]"; echo "*"; echo; echo "[main]"
   for_each_enabled_env | while read -r env idx; do
-    echo "control+alt+$idx = command(/usr/local/bin/vmswitch $idx)"
+    echo "leftcontrol+leftalt+$idx = command(/usr/local/bin/vmswitch $idx)"
   done
-  echo "meta+enter = command(/usr/local/bin/vmswitch term)"
+  echo "leftmeta+enter = command(/usr/local/bin/vmswitch term)"
   # Super+p (captive-portal login) and Super+y (route a YubiKey to one VM) must
   # also work UNDER the SPICE grab, so route them through keyd like the workspace
   # keys — an i3-only bindsym never fires while a guest holds the keyboard grab,
   # which is the normal state of this kiosk. Super+y was i3-only and therefore
   # dead in practice.
-  echo "meta+p = command(/usr/local/bin/vmswitch portal)"
-  echo "meta+y = command(/usr/local/bin/vmswitch usb)"
+  echo "leftmeta+p = command(/usr/local/bin/vmswitch portal)"
+  echo "leftmeta+y = command(/usr/local/bin/vmswitch usb)"
 } > /etc/keyd/default.conf
 
 # keyd creates its virtual keyboard via /dev/uinput — without the uinput module

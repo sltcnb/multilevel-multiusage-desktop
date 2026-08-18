@@ -113,11 +113,11 @@ assert_contains "the clipboard does not cross security domains" "$KH/.config/vir
 # Hotkeys must be delivered by keyd (evdev, below X): SPICE grabs the X keyboard
 # whenever a guest is focused, which is the normal state of this kiosk, so an
 # i3-only bindsym never fires.
-assert_contains "keyd binds Ctrl+Alt+1 to switch to env 1" /etc/keyd/default.conf 'control\+alt\+1 = command\(/usr/local/bin/vmswitch 1\)'
-assert_not_contains "Super+1 is NOT a keyd switch chord (left to the guest)" /etc/keyd/default.conf 'meta\+1 = command'
-assert_contains "keyd binds Super+Enter for the host shell" /etc/keyd/default.conf 'meta\+enter = command\(/usr/local/bin/vmswitch term\)'
-assert_contains "keyd binds Super+p for the captive portal" /etc/keyd/default.conf 'meta\+p = command\(/usr/local/bin/vmswitch portal\)'
-assert_contains "keyd binds Super+y for the USB chooser" /etc/keyd/default.conf 'meta\+y = command\(/usr/local/bin/vmswitch usb\)'
+assert_contains "keyd binds Ctrl+Alt+1 to switch to env 1" /etc/keyd/default.conf 'leftcontrol\+leftalt\+1 = command\(/usr/local/bin/vmswitch 1\)'
+assert_not_contains "Super+1 is NOT a keyd switch chord (left to the guest)" /etc/keyd/default.conf 'leftmeta\+1 = command'
+assert_contains "keyd binds Super+Enter for the host shell" /etc/keyd/default.conf 'leftmeta\+enter = command\(/usr/local/bin/vmswitch term\)'
+assert_contains "keyd binds Super+p for the captive portal" /etc/keyd/default.conf 'leftmeta\+p = command\(/usr/local/bin/vmswitch portal\)'
+assert_contains "keyd binds Super+y for the USB chooser" /etc/keyd/default.conf 'leftmeta\+y = command\(/usr/local/bin/vmswitch usb\)'
 # Every overlay must switch to an empty workspace first, or it opens behind the
 # focused VM and is never seen.
 assert_contains "the USB chooser opens on its own workspace" /usr/local/bin/vmswitch 'usb).*workspace number 7'
@@ -189,8 +189,8 @@ new_sandbox
 cfg_set development_ENABLED 0
 "$SANDBOX/src/host.sh" switching > /dev/null 2>&1
 assert_not_contains "a disabled env gets no viewer" "$I3" 'vm-viewer.sh development'
-assert_not_contains "a disabled env gets no hotkey" /etc/keyd/default.conf 'control\+alt\+2 ='
-assert_contains "the remaining envs keep their numbers" /etc/keyd/default.conf 'control\+alt\+3 = command\(/usr/local/bin/vmswitch 3\)'
+assert_not_contains "a disabled env gets no hotkey" /etc/keyd/default.conf 'leftcontrol\+leftalt\+2 ='
+assert_contains "the remaining envs keep their numbers" /etc/keyd/default.conf 'leftcontrol\+leftalt\+3 = command\(/usr/local/bin/vmswitch 3\)'
 
 # TRUST_BAR=0 is the documented alternative: true fullscreen, no bar.
 new_sandbox
