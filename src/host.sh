@@ -1814,24 +1814,41 @@ usb_disk="$(lsblk -no PKNAME "$root_src" 2>/dev/null | head -1 || true)"
 log "Booted from (USB, will NOT touch): /dev/$usb_disk"
 
 # -----------------------------------------------------------------------------
-# 2. List candidate internal disks (whole disks, type 'disk', not the USB, not
-#    removable). Pick the largest by default; show all for confirmation.
+# 2. Pick the INTERNAL disk by TRANSPORT + HOTPLUG, never by size.
+#    Size is a bad discriminator: the boot USB itself can be the largest disk
+#    (a 1 TB stick), and an external backup drive can be larger than the internal
+#    SSD — so "largest" happily targets the wrong device. The RM flag is no good
+#    either (many USB/external disks report RM=0). A disk is INTERNAL when its
+#    transport is not usb AND it is not hot-pluggable (nvme/sata/ata/virtio/mmc
+#    qualify; USB sticks and external drives are hotplug=1 and/or tran=usb). Size
+#    is used ONLY to break ties between genuine internal disks. If transport info
+#    is somehow unavailable, fall back to the largest non-removable disk + warn.
 # -----------------------------------------------------------------------------
 log "Block devices:"
-lsblk -dno NAME,SIZE,TYPE,MODEL,RM | sed 's/^/    /'
+lsblk -dno NAME,SIZE,TYPE,TRAN,HOTPLUG,MODEL | sed 's/^/    /'
 
-# Candidates: type=disk, name != usb_disk, RM(removable)=0.
-target=""
-best_bytes=0
-while read -r name _ type rm; do
+target=""; best_bytes=0
+fallback=""; fb_bytes=0
+while read -r name type rm hotplug tran; do
   [ "$type" = "disk" ] || continue
-  [ "$name" = "$usb_disk" ] && continue
-  [ "$rm" = "0" ] || continue            # skip removable (other USBs)
-  bytes="$(lsblk -dnbo SIZE "/dev/$name" | head -1)"
-  if [ "$bytes" -gt "$best_bytes" ]; then best_bytes="$bytes"; target="$name"; fi
+  [ "$name" = "$usb_disk" ] && continue            # never the boot/USB disk
+  case "$name" in loop*|ram*|zram*|sr*|fd*|md*) continue ;; esac
+  bytes="$(lsblk -dnbo SIZE "/dev/$name" 2>/dev/null | head -1)"
+  case "$bytes" in ''|*[!0-9]*) bytes=0 ;; esac
+  if [ "$tran" != "usb" ] && [ "${hotplug:-0}" = "0" ]; then
+    # genuine internal disk (fixed, non-usb transport)
+    [ "$bytes" -gt "$best_bytes" ] && { best_bytes="$bytes"; target="$name"; }
+  elif [ "$rm" = "0" ]; then
+    # usb/hotpluggable but marked non-removable: fallback only
+    [ "$bytes" -gt "$fb_bytes" ] && { fb_bytes="$bytes"; fallback="$name"; }
+  fi
 done <<EOF
-$(lsblk -dno NAME,SIZE,TYPE,RM)
+$(lsblk -dno NAME,TYPE,RM,HOTPLUG,TRAN)
 EOF
+if [ -z "$target" ] && [ -n "$fallback" ]; then
+  warn "No disk identified as INTERNAL by transport/hotplug — falling back to the largest non-removable disk (/dev/$fallback). VERIFY this is the internal disk, or set TARGET_DISK=<name>."
+  target="$fallback"
+fi
 
 # Allow override: TARGET_DISK=nvme0n1 ./src/host.sh install-to-disk
 target="${TARGET_DISK:-$target}"
@@ -1878,13 +1895,15 @@ tgt_p="$(partsuffix "$target")"
 # Source = the disk we booted from (USB). Dest = the internal target.
 src_bytes="$(lsblk -dnbo SIZE "/dev/$usb_disk" | head -1)"
 dst_bytes="$(lsblk -dnbo SIZE "/dev/$target"   | head -1)"
-src_rm="$(lsblk -dno RM "/dev/$usb_disk" | head -1)"
 [ "$usb_disk" != "$target" ] || die "SOURCE == DEST ($usb_disk); aborting (would clone a disk onto itself)."
-# The boot/source disk should be the removable USB. If it is NOT removable AND is
-# larger than the target, we're almost certainly about to clone internal->USB by
-# mistake — refuse. (Override with FORCE_DIRECTION=1 if you really mean it.)
-if [ "${FORCE_DIRECTION:-0}" != "1" ] && [ "$src_rm" != "1" ] && [ "${src_bytes:-0}" -gt "${dst_bytes:-0}" ]; then
-  die "Refusing: source /dev/$usb_disk (non-removable, larger) -> /dev/$target looks like internal->USB. Set FORCE_DIRECTION=1 to override."
+# Guard the DIRECTION by transport, NOT by size. A size test false-positives when
+# the boot USB is bigger than the internal disk (e.g. a 1 TB stick onto a 512 GB
+# SSD) and needlessly refuses a correct install. Instead: refuse only if the
+# TARGET itself is usb/hot-pluggable — i.e. we'd be cloning ONTO a removable disk.
+tgt_tran="$(lsblk -dno TRAN "/dev/$target" 2>/dev/null | head -1)"
+tgt_hotplug="$(lsblk -dno HOTPLUG "/dev/$target" 2>/dev/null | head -1)"
+if [ "${FORCE_DIRECTION:-0}" != "1" ] && { [ "$tgt_tran" = "usb" ] || [ "${tgt_hotplug:-0}" = "1" ]; }; then
+  die "Refusing: target /dev/$target is USB/hot-pluggable (transport=${tgt_tran:-?}, hotplug=${tgt_hotplug:-?}), not an internal disk. Set TARGET_DISK=<internal disk>, or FORCE_DIRECTION=1 to override."
 fi
 log "CLONE DIRECTION -> SOURCE=/dev/$usb_disk (boot/USB, $((src_bytes/1024/1024/1024))G)  DEST=/dev/$target (internal, $((dst_bytes/1024/1024/1024))G)"
 
