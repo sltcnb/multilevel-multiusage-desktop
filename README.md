@@ -696,6 +696,7 @@ IN_CONTAINER=1 ./tests/run.sh    # already on a suitable Linux host, as root
 | `tests/test-windows.sh` | the Windows 11 office path: the q35+UEFI+vTPM virt-install profile, the media it attaches, the generated autounattend.xml, and the no-ISO fail-closed |
 | `tests/test-isolate.sh` | the isolation ruleset, egress policy, and the verification result |
 | `tests/test-host.sh`    | hardening, the kiosk desktop, switching/trust bar, Wi-Fi, captive portal |
+| `tests/test-runtime.sh` | RUNTIME integration: the real keyd parser and a real i3 (Xvfb) against the generated configs — a rejected hotkey chord, a workspace the switch key never reaches, a vmswitch that cannot find i3, and backticks inside an unquoted heredoc are all invisible to text assertions |
 | `tests/test-ops.sh`     | the setup menu, USB routing, password changes, VPN, secret scrubbing |
 | `tests/test-audit.sh`   | the audit log: append-only, rotation, the unprivileged spool, never aborting its caller |
 | `tests/test-watch.sh`   | the isolation watch: status-file contract, transitions, the recurring timer |

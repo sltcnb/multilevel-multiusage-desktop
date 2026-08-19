@@ -3,9 +3,13 @@
 # POSIX sh: the same shell Alpine's /bin/sh gives us, so the tests run in the
 # image's own environment rather than a friendlier one.
 
-PASS=0; FAIL=0
+PASS=0; FAIL=0; SKIP=0
 _g() { printf '\033[1;32m  ok  \033[0m %s\n' "$1"; PASS=$((PASS+1)); }
 _b() { printf '\033[1;31m FAIL \033[0m %s\n' "$1"; FAIL=$((FAIL+1)); }
+# _skip <label> <why> — a check that could NOT run here (missing binary, no
+# /dev/uinput, ...). Never a failure, but counted and printed so a suite that
+# silently stopped covering something is visible instead of looking green.
+_skip() { printf '\033[1;33m skip \033[0m %s (%s)\n' "$1" "$2"; SKIP=$((SKIP+1)); }
 
 # assert_contains <label> <haystack-file> <needle-regex>
 assert_contains() {
@@ -49,6 +53,10 @@ assert_mode() {
 }
 
 summary() {
-  printf '\n  %s passed, %s failed\n' "$PASS" "$FAIL"
+  if [ "${SKIP:-0}" -gt 0 ]; then
+    printf '\n  %s passed, %s failed, %s skipped\n' "$PASS" "$FAIL" "$SKIP"
+  else
+    printf '\n  %s passed, %s failed\n' "$PASS" "$FAIL"
+  fi
   [ "$FAIL" -eq 0 ]
 }

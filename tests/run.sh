@@ -20,7 +20,14 @@ ALPINE_BRANCH="${ALPINE_BRANCH:-v3.22}"
 # Packages the suite itself needs: nftables to load the generated rulesets for
 # real, xorriso to read back the cloud-init seed, python3+pyyaml to prove the
 # generated user-data is valid YAML, qemu-img for the disk paths.
-DEPS="bash nftables xorriso qemu-img python3 py3-yaml shadow gnupg openssl coreutils util-linux"
+# i3wm/xvfb/xterm/jq/keyd are for tests/test-runtime.sh: it runs the REAL keyd
+# parser and a REAL i3 against the generated configs, because text assertions
+# cannot catch a chord keyd rejects or a workspace the switch key never reaches.
+# KEEP THIS ON ONE LINE: it is interpolated into a `sh -c "apk add $DEPS && ..."`
+# string, so an embedded newline would terminate the apk command early — the
+# runtime deps silently would not install and the `adduser kiosk` after the &&
+# would never run (which then fails switching.sh with exit 2).
+DEPS="bash nftables xorriso qemu-img python3 py3-yaml shadow gnupg openssl coreutils util-linux i3wm xvfb xterm jq keyd"
 
 if [ "${IN_CONTAINER:-0}" != "1" ]; then
   command -v docker >/dev/null 2>&1 || { echo "[x] Docker required (or run with IN_CONTAINER=1 on a Linux host)."; exit 1; }
