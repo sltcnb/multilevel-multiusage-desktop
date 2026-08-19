@@ -902,7 +902,6 @@ sed -i -e "s|HOMEDIR_APP|$APP_ROOT|" \
 # ANSSI trust bar. Switching uses `workspace number` so the label doesn't matter.
 first_idx=""
 for_each_enabled_env | while read -r env idx; do
-  label="$(env_title "$env")"
   cat >> "$I3_DIR/config" <<EOF
 
 # --- $env (workspace $idx) ---
@@ -910,7 +909,17 @@ for_each_enabled_env | while read -r env idx; do
 # guest (Windows uses Super+1..9 for the taskbar), and an i3 root-grab bind only
 # fires when a guest is NOT holding the keyboard grab anyway. VM switching is
 # Ctrl+Alt+<n>, delivered by keyd below X so it works even under the SPICE grab.
-for_window [class="(?i)virt-viewer" title="(?i)$env"] move to workspace "$idx: $label", border none
+#
+# `move to workspace number $idx` — NOT a named workspace like "$idx: LABEL".
+# A named workspace is a DIFFERENT workspace from the plain numbered one even
+# though both report num=$idx: i3 boots focused on "1" while the viewer was moved
+# to "1: OFFICE", and `workspace number 1` (boot + vmswitch) focuses the EMPTY
+# "1". Result: every VM ran, every viewer had a mapped window, and the operator
+# stared at a black screen with a cursor and no way to reach any of them. Using
+# the number everywhere makes boot focus, vmswitch and the trust bar agree.
+# (The trust bar labels come from polybar/active-env.sh, keyed on the workspace
+# NUMBER, so nothing is lost by dropping the cosmetic name.)
+for_window [class="(?i)virt-viewer" title="(?i)$env"] move to workspace number $idx, border none
 exec --no-startup-id sh -c 'exec ~/vm-viewer.sh $env'
 EOF
 done
@@ -1354,7 +1363,18 @@ export PATH=/usr/local/bin:/usr/bin:/bin
 # DIRECTLY (-s) so no X round-trip is needed at all.
 KU="$KIOSK_USER"
 KH="\$(getent passwd "\$KU" | cut -d: -f6)"
-pid="\$(pgrep -u "\$KU" -x i3 | head -1)"
+# Find the kiosk's i3 PID. busybox pgrep (what Alpine ships) does NOT match the
+# i3 process for \`pgrep -u <user> -x i3\` — verified against a real i3: it returns
+# nothing while pidof finds it. That silently broke EVERY hotkey: with no pid we
+# read no DISPLAY/XAUTHORITY/I3SOCK, so i3-msg could not find the socket
+# ("Connection refused") and the switch did nothing. Try pgrep (works with procps
+# on non-Alpine hosts), then fall back to pidof filtered by /proc owner.
+pid="\$(pgrep -u "\$KU" -x i3 2>/dev/null | head -1)"
+if [ -z "\$pid" ]; then
+  for _p in \$(pidof i3 2>/dev/null); do
+    [ "\$(stat -c %U "/proc/\$_p" 2>/dev/null)" = "\$KU" ] && { pid="\$_p"; break; }
+  done
+fi
 if [ -n "\$pid" ] && [ -r "/proc/\$pid/environ" ]; then
   DISPLAY="\$(tr '\0' '\n' < "/proc/\$pid/environ" | sed -n 's/^DISPLAY=//p'    | head -1)"
   XAUTHORITY="\$(tr '\0' '\n' < "/proc/\$pid/environ" | sed -n 's/^XAUTHORITY=//p' | head -1)"
@@ -1366,6 +1386,10 @@ export DISPLAY XAUTHORITY
 # Ask i3 itself for the socket if the environ didn't have it (older i3 doesn't
 # export I3SOCK). Then prefer -s <sock>; only fall back to the X-property path.
 [ -n "\$I3SOCK" ] || I3SOCK="\$(su -s /bin/sh "\$KU" -c 'i3 --get-socketpath' 2>/dev/null)"
+# Last resort: i3 always creates its IPC socket at /tmp/i3-<user>.<rand>/ipc-socket.<pid>.
+# Glob it (newest first) so switching still works even if the pid lookup and
+# \`i3 --get-socketpath\` both come up empty.
+[ -n "\$I3SOCK" ] || I3SOCK="\$(ls -t /tmp/i3-"\$KU".*/ipc-socket.* 2>/dev/null | head -1)"
 MSG="i3-msg"; [ -n "\$I3SOCK" ] && MSG="i3-msg -s \$I3SOCK"
 # Breadcrumb so a dead hotkey is diagnosable: if this file grows on each press,
 # keyd is firing and the problem is downstream; if it never appears, keyd isn't.

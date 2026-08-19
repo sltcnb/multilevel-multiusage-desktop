@@ -97,7 +97,7 @@ I3="$KH/.config/i3/config"
 # (Windows uses Super+1..9). So i3 must NOT bind Super+<n> for switching.
 assert_not_contains "Super+<n> is NOT bound for switching in i3 (left to the guest)" "$I3" 'bindsym \$mod\+1 workspace'
 assert_contains "each env's viewer is launched" "$I3" "vm-viewer.sh administration"
-assert_contains "the viewer is matched onto its numbered workspace" "$I3" 'move to workspace "2: DEVELOPMENT"'
+assert_contains "the viewer is matched onto its NUMBERED workspace (a named one is a different workspace than the numbered one)" "$I3" "move to workspace number 2"
 assert_contains "boot lands on the first enabled env" "$I3" 'i3-msg workspace number 1'
 # Super+w lets the unprivileged kiosk add a Wi-Fi network (work-from-home).
 assert_contains "Super+w is bound to the add-Wi-Fi helper" "$I3" 'bindsym \$mod\+w .*Add Wi-Fi'
