@@ -474,7 +474,20 @@ setxkbmap us || true
 # the passed-through VM will render on the real GPU output instead of SPICE.
 # At that point you may drop that VM's virt-viewer here and let the guest own
 # the physical display. Leave SPICE viewers for the remaining VMs.
-exec i3
+#
+# dbus-run-session: modern virt-viewer is a GtkApplication and will NOT create
+# its window without a session D-Bus. The kiosk X session has none (no desktop
+# environment starts one, and dbus-launch lives in dbus-x11 which we don't ship),
+# so virt-viewer failed with "failed to execute child dbus-launch" / "could not
+# create org.gnome.SessionManager" and every viewer stayed invisible — a black
+# screen behind the i3 cursor. Start the whole session under one session bus so
+# i3 and every virt-viewer it spawns inherit DBUS_SESSION_BUS_ADDRESS. If
+# dbus-run-session is somehow missing, fall back to bare i3 rather than no WM.
+if command -v dbus-run-session >/dev/null 2>&1; then
+  exec dbus-run-session -- i3
+else
+  exec i3
+fi
 EOF
 # Apply the configured keyboard layout (config KEYBOARD_LAYOUT, e.g. us, fr,
 # de, or "fr:oss" for layout:variant). Replaces the default 'setxkbmap us'.
@@ -1286,7 +1299,6 @@ headerbar button, headerbar button image {
   min-width: 0;
   padding: 0;
   margin: 0;
-  -gtk-icon-size: 0;
 }
 headerbar separator { min-width: 0; }
 /* Traditional GtkMenuBar + toolbar (older virt-viewer builds draw these instead

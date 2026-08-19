@@ -66,7 +66,10 @@ assert_contains "tty1 autologins the unprivileged kiosk user, not root" /etc/ini
 assert_contains "the kiosk profile auto-starts X on tty1 only" "$KH/.profile" '= "/dev/tty1"'
 assert_contains "and only when X is not already running" "$KH/.profile" '\-z "\$\{DISPLAY:-\}"'
 assert_contains "the kiosk drives the system libvirt instance" "$KH/.profile" 'LIBVIRT_DEFAULT_URI=qemu:///system'
-assert_contains "xinitrc launches i3" "$KH/.xinitrc" '^exec i3$'
+# virt-viewer (GtkApplication) needs a session D-Bus or its window never maps;
+# the kiosk session has none, so start it under dbus-run-session.
+assert_contains "xinitrc starts i3 under a session D-Bus" "$KH/.xinitrc" 'exec dbus-run-session -- i3'
+assert_not_contains "the invalid -gtk-icon-size property is gone (GTK parse error)" "$KH/.config/gtk-3.0/gtk.css" 'gtk-icon-size'
 assert_contains "the configured keyboard layout is applied" "$KH/.xinitrc" 'setxkbmap us'
 assert_contains "usbguard defaults to blocking unknown devices" /etc/usbguard/usbguard-daemon.conf 'ImplicitPolicyTarget=block'
 assert_contains "input devices stay allowed so the machine remains usable" /etc/usbguard/rules.conf 'allow with-interface one-of \{ 03:\*:\* \}'
