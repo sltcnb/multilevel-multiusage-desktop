@@ -910,10 +910,10 @@ for_each_enabled_env | while read -r env idx; do
 # fires when a guest is NOT holding the keyboard grab anyway. VM switching is
 # Ctrl+Alt+<n>, delivered by keyd below X so it works even under the SPICE grab.
 #
-# `move to workspace number $idx` — NOT a named workspace like "$idx: LABEL".
+# 'move to workspace number $idx' — NOT a named workspace like "$idx: LABEL".
 # A named workspace is a DIFFERENT workspace from the plain numbered one even
 # though both report num=$idx: i3 boots focused on "1" while the viewer was moved
-# to "1: OFFICE", and `workspace number 1` (boot + vmswitch) focuses the EMPTY
+# to "1: OFFICE", and 'workspace number 1' (boot + vmswitch) focuses the EMPTY
 # "1". Result: every VM ran, every viewer had a mapped window, and the operator
 # stared at a black screen with a cursor and no way to reach any of them. Using
 # the number everywhere makes boot focus, vmswitch and the trust bar agree.

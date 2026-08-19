@@ -1313,12 +1313,12 @@ delete table inet appliance_isol
 table inet appliance_isol {
   chain forward {
     # FAIL CLOSED: policy drop, not accept. Previously this chain relied ENTIRELY
-    # on its explicit per-pair drop rules matching, and fell through to `policy
-    # accept` for anything they missed — so a single un-generated pair (subnet /
+    # on its explicit per-pair drop rules matching, and fell through to 'policy
+    # accept' for anything they missed — so a single un-generated pair (subnet /
     # bridge drift, a new env type, a partial reload) or a host lacking the
-    # assumed base `inet filter` drop-policy (the Debian/systemd path defines no
+    # assumed base 'inet filter' drop-policy (the Debian/systemd path defines no
     # such table) left those environments able to route to each other. With
-    # `policy drop`, inter-VM forwarding is IMPOSSIBLE unless a rule below
+    # 'policy drop', inter-VM forwarding is IMPOSSIBLE unless a rule below
     # explicitly permits it, and the only permits below are egress to the WAN /
     # the env's own VPN tunnel and established return traffic — never VM->VM.
     # Isolation no longer depends on a base table this repo does not write.
@@ -1412,8 +1412,15 @@ fi
 # isolation load (which is the security-critical part).
 if nft -f "$GUESTNET_NFT" 2>/dev/null; then
   ok "Guest DHCP/DNS + egress permitted through the host base firewall."
+elif ! nft list table inet filter >/dev/null 2>&1; then
+  # No base 'inet filter' table in the running ruleset at all — the normal case
+  # with HARDEN_INPUT=0 (no host input firewall). nftables' implicit policy is
+  # accept when no chain matches, so NOTHING is blocking guest DHCP/DNS and these
+  # rules are simply not needed. Say that plainly instead of raising a false
+  # alarm about guests getting no IP: they are unaffected.
+  log "No base 'inet filter' table (HARDEN_INPUT=0) — nothing blocks guest DHCP/DNS, so these rules are not needed."
 else
-  warn "Could not apply $GUESTNET_NFT now (no base 'inet filter' table?). If guests get no IP, this is why — see the comment in isolate.sh."
+  warn "Could not apply $GUESTNET_NFT although a base 'inet filter' table exists — guest DHCP/DNS may be blocked by it. Check: nft list table inet filter"
 fi
 
 # -----------------------------------------------------------------------------
