@@ -1326,7 +1326,6 @@ toolbar button, .toolbar button, toolbar button image {
   min-width: 0;
   padding: 0;
   margin: 0;
-  -gtk-icon-size: 0;
 }
 EOF
 # Own all kiosk desktop config (i3, viewer, fs flag) by the kiosk user.
