@@ -10,8 +10,8 @@ flip between them with a single keystroke.
 
 Under the hood it's a tiny Alpine Linux host whose only job is to run KVM virtual
 machines and show them full-screen. You never touch the host directly — it boots
-straight into the first VM, and `Super+1` / `Super+2` / `Super+3` swap between
-them instantly on the same screen, keyboard and mouse. Each VM is a completely
+straight into the first VM, and `Ctrl+Alt+1` / `Ctrl+Alt+2` / `Ctrl+Alt+3` swap
+between them instantly on the same screen, keyboard and mouse. Each VM is a completely
 separate environment (its own OS, its own network, its own disk), and the whole
 point is that **they cannot talk to each other**. One can be compromised without
 putting the others at risk.
@@ -20,11 +20,15 @@ It's built to line up with the French cybersecurity agency's guidance for
 multi-environment workstations (ANSSI-PA-114). There's a section further down
 that maps each recommendation to what the appliance actually does.
 
-| Hotkey    | Environment      | Purpose                        | Default OS | Desktop |
-|-----------|------------------|--------------------------------|------------|---------|
-| `Super+1` | **office**       | Everyday work, email, browsing | Windows 11 | native  |
-| `Super+2` | **development**  | Coding, dev tools              | Arch       | GNOME   |
-| `Super+3` | **administration** | Sensitive/admin tasks        | Arch       | GNOME   |
+| Hotkey       | Environment      | Purpose                        | Default OS | Desktop |
+|--------------|------------------|--------------------------------|------------|---------|
+| `Ctrl+Alt+1` | **office**       | Everyday work, email, browsing | Windows 11 | native  |
+| `Ctrl+Alt+2` | **development**  | Coding, dev tools              | Arch       | GNOME   |
+| `Ctrl+Alt+3` | **administration** | Sensitive/admin tasks        | Arch       | GNOME   |
+
+Switching is `Ctrl+Alt+<n>`, delivered by `keyd` below the display server so it
+works even while a guest holds the keyboard grab. Super/Meta is deliberately left
+to the guest (Windows uses `Super+1..9` for its taskbar).
 
 The office VM defaults to **Windows 11** so it gets first-class Entra ID join,
 Intune MDM and native Microsoft 365 / Teams / Outlook. Windows needs an install
@@ -39,7 +43,7 @@ other two environments can be any supported OS.
 The bar across the top is the "trust bar": it's always visible and the highlighted
 workspace number tells you which environment is currently active, so you can never
 confuse one world for another. Below it, the active VM's desktop fills the screen,
-and `Super+1/2/3` swaps which one is shown — instantly, on the same physical
+and `Ctrl+Alt+1/2/3` swaps which one is shown — instantly, on the same physical
 display.
 
 ## How the isolation works
@@ -343,7 +347,7 @@ To change a guest's password later without rebuilding, use
 `./src/environments.sh set-guest-password <env>` (live, via the guest agent).
 
 Reboot to confirm the full experience: you land on the office VM full-screen and
-`Super+1/2/3` switches between them. `Super+Return` opens a terminal and
+`Ctrl+Alt+1/2/3` switches between them. `Super+Return` opens a terminal and
 `Super+p` the captive portal — both work even while a VM holds the keyboard.
 
 The one ordering rule that matters: **Wi-Fi → portal login → create → isolate.**
@@ -352,9 +356,10 @@ the radio up.
 
 ## Day-to-day use
 
-- `Super+1` / `Super+2` / `Super+3` — switch environments. This works even while a
-  VM has grabbed the keyboard, because the hotkey is caught below the display
-  server by `keyd`.
+- `Ctrl+Alt+1` / `Ctrl+Alt+2` / `Ctrl+Alt+3` — switch environments. This works even
+  while a VM has grabbed the keyboard, because the hotkey is caught below the
+  display server by `keyd` (which needs `/dev/uinput`; the host loads it at boot).
+  Super/Meta is left to the guest, so Windows keeps its own `Super+1..9`.
 - `Super+p` — re-open the captive portal when the Wi-Fi session times out.
 - `Super+y` — route a plugged YubiKey (or any USB device) to a chosen VM.
 - `Super+w` — add a new Wi-Fi network (e.g. working from home). The kiosk user
