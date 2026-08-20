@@ -27,7 +27,7 @@ ALPINE_BRANCH="${ALPINE_BRANCH:-v3.22}"
 # string, so an embedded newline would terminate the apk command early — the
 # runtime deps silently would not install and the `adduser kiosk` after the &&
 # would never run (which then fails switching.sh with exit 2).
-DEPS="bash nftables xorriso qemu-img python3 py3-yaml shadow gnupg openssl coreutils util-linux i3wm xvfb xterm jq keyd"
+DEPS="bash nftables xorriso qemu-img python3 py3-yaml shadow gnupg openssl coreutils util-linux i3wm xvfb xterm jq keyd py3-evdev"
 
 if [ "${IN_CONTAINER:-0}" != "1" ]; then
   command -v docker >/dev/null 2>&1 || { echo "[x] Docker required (or run with IN_CONTAINER=1 on a Linux host)."; exit 1; }

@@ -187,6 +187,52 @@ if command -v i3 >/dev/null 2>&1 && command -v Xvfb >/dev/null 2>&1 \
       else
         _skip "vmswitch survives a pgrep that finds nothing" "no /usr/bin/pgrep to shadow"
       fi
+      # --- THE ACTUAL SHORTCUT: a real keypress through real keyd -----------
+      # Everything above tests the pieces; this tests the operator's gesture.
+      # A virtual keyboard is created first so keyd grabs it at startup, then
+      # Ctrl+Alt+2 is injected at the evdev layer — exactly what pressing the keys
+      # does — and the focused workspace must change.
+      if [ -c /dev/uinput ] && python3 -c 'import evdev' 2>/dev/null && command -v keyd >/dev/null 2>&1; then
+        cat > /tmp/rt-inject.py <<'PYI'
+import sys, time
+from evdev import UInput, ecodes as e
+ui = UInput({e.EV_KEY: list(range(1, 128))}, name="rtkbd", vendor=0x1234, product=0x5678)
+time.sleep(4.0)                      # let keyd start and grab this device
+def tap(*ks):
+    for k in ks: ui.write(e.EV_KEY, k, 1); ui.syn(); time.sleep(0.04)
+    for k in reversed(ks): ui.write(e.EV_KEY, k, 0); ui.syn(); time.sleep(0.04)
+tap(e.KEY_LEFTCTRL, e.KEY_LEFTALT, getattr(e, "KEY_%s" % sys.argv[1]))
+time.sleep(1.0); ui.close()
+PYI
+        i3-msg -s "$SOCK" "workspace number 1" >/dev/null 2>&1; sleep 1
+        python3 /tmp/rt-inject.py 2 >/dev/null 2>&1 &
+        rt_inj=$!
+        sleep 1
+        keyd > /tmp/rt-keyd-live.out 2>&1 &
+        rt_keyd=$!
+        sleep 8
+        assert_eq "pressing Ctrl+Alt+2 (real keyd -> vmswitch -> i3) switches the VM" \
+          "2" "$(i3-msg -s "$SOCK" -t get_workspaces 2>/dev/null | jq -r '.[]|select(.focused).num')"
+        kill "$rt_keyd" 2>/dev/null || true; wait "$rt_inj" 2>/dev/null || true
+        pkill -x keyd 2>/dev/null || true
+      else
+        _skip "pressing Ctrl+Alt+2 switches the VM (real keypress)" "needs /dev/uinput, py3-evdev and keyd"
+      fi
+
+      # --- trust bar still names the env after the numbered-workspace change ---
+      # active-env.sh maps the FOCUSED WORKSPACE NUMBER to a label; moving the
+      # viewers from named to numbered workspaces could have broken that, and it
+      # is the ANSSI trust indicator, so verify the rendered pill by running it.
+      PB="$KH/.config/polybar/active-env.sh"
+      if [ -f "$PB" ]; then
+        i3-msg -s "$SOCK" "workspace number 2" >/dev/null 2>&1; sleep 1
+        su "$KU" -s /bin/sh -c "DISPLAY=:98 timeout 4 $PB" 2>/dev/null | head -1 > /tmp/rt-bar.out
+        assert_contains "the trust bar names the focused env (workspace 2 -> DEVELOPMENT)" \
+          /tmp/rt-bar.out 'DEVELOPMENT'
+      else
+        _skip "trust bar names the focused env" "no polybar active-env.sh generated"
+      fi
+
       if [ -f /run/appliance/vmswitch.log ]; then
         assert_not_contains "vmswitch resolved the i3 socket (not sock=NONE)" \
           /run/appliance/vmswitch.log 'sock=NONE'
