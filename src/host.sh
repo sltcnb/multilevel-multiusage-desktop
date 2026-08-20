@@ -639,7 +639,15 @@ if [ "${YUBIKEY_ROUTER:-1}" = "1" ]; then
 # ~/.Xauthority (the exact trap vmswitch was fixed for in 281e7e3), so read the
 # REAL values from the running i3 process env; fall back to globbing the home.
 KU="$KIOSK_USER"
-pid="\$(pgrep -u "\$KU" -x i3 | head -1)"
+# busybox pgrep (Alpine) does NOT match \`pgrep -u <user> -x i3\` — verified on a
+# booted appliance: it returns nothing while pidof finds i3. Without the pid we
+# read no DISPLAY/XAUTHORITY and the chooser never appears. Fall back to pidof.
+pid="\$(pgrep -u "\$KU" -x i3 2>/dev/null | head -1)"
+if [ -z "\$pid" ]; then
+  for _p in \$(pidof i3 2>/dev/null); do
+    [ "\$(stat -c %U "/proc/\$_p" 2>/dev/null)" = "\$KU" ] && { pid="\$_p"; break; }
+  done
+fi
 if [ -n "\$pid" ] && [ -r "/proc/\$pid/environ" ]; then
   DISPLAY="\$(tr '\0' '\n' < "/proc/\$pid/environ" | sed -n 's/^DISPLAY=//p'    | head -1)"
   XAUTHORITY="\$(tr '\0' '\n' < "/proc/\$pid/environ" | sed -n 's/^XAUTHORITY=//p' | head -1)"
@@ -1513,14 +1521,18 @@ elif command -v systemctl >/dev/null 2>&1; then
   systemctl enable --now keyd 2>/dev/null || true
 fi
 # keyd needs a moment to grab the evdev devices after (re)start.
-for _ in 1 2 3 4 5; do pgrep -x keyd >/dev/null 2>&1 && break; sleep 0.3; done
-if pgrep -x keyd >/dev/null 2>&1; then
+# keyd_live: busybox pgrep -x does not match keyd (verified on a booted appliance:
+# `pgrep -x keyd` exits 1 while `pidof keyd` prints the pid), so checking with
+# pgrep alone reported a running keyd as dead. Accept either.
+keyd_live() { pgrep -x keyd >/dev/null 2>&1 || pidof keyd >/dev/null 2>&1; }
+for _ in 1 2 3 4 5; do keyd_live && break; sleep 0.3; done
+if keyd_live; then
   ok "keyd is running — global switch hotkeys are live."
 else
   warn "keyd is NOT running — the VM switch hotkeys will not work until it is. Try: rc-service keyd start (or: systemctl start keyd), then check 'keyd monitor' sees your keys."
 fi
 
-ok "Switching configured for enabled envs: $(for_each_enabled_env | awk '{printf "%s(Super+%s / Ctrl+Alt+%s) ",$1,$2,$2}'). Super+Enter = host shell."
+ok "Switching configured for enabled envs: $(for_each_enabled_env | awk '{printf "%s(Ctrl+Alt+%s) ",$1,$2}'). Super+Enter = host shell (Super is left to the guest)."
 cat <<EOF
 
 Next (operator): cd /opt/appliance && ./setup.sh    # 1) create the VMs  2) isolate + verify

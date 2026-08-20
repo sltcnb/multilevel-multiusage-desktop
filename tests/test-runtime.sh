@@ -85,6 +85,29 @@ KEYD_CFG=/etc/keyd/default.conf
 assert_contains "switching loads uinput (keyd cannot start without it)" \
   "$REPO_ROOT/src/host.sh" 'modprobe uinput'
 
+# --- busybox pgrep must never be the ONLY way we find a process -------------
+# Verified on a booted appliance: `pgrep -x keyd` exits 1 while `pidof keyd`
+# prints the pid, and `pgrep -u kiosk -x i3` finds nothing while i3 is running.
+# Anything that locates keyd or i3 with pgrep alone is therefore broken on the
+# real system: provisioning reported a live keyd as dead, the YubiKey chooser
+# could not find the kiosk X session, and vmswitch could not reach i3.
+for _f in /usr/local/bin/vmswitch /usr/local/bin/yubikey-plugged; do
+  if [ -f "$_f" ]; then
+    if grep -q 'pgrep' "$_f" && ! grep -q 'pidof' "$_f"; then
+      _b "$(basename "$_f") does not depend on busybox pgrep alone"
+      printf '        %s greps for a pid with pgrep and has no pidof fallback\n' "$_f"
+    else
+      _g "$(basename "$_f") does not depend on busybox pgrep alone"
+    fi
+  else
+    _skip "$(basename "$_f") pgrep independence" "not generated here"
+  fi
+done
+assert_contains "the keyd liveness check accepts pidof too (busybox pgrep -x fails)" \
+  "$REPO_ROOT/src/host.sh" 'keyd_live\(\) \{ pgrep -x keyd .* pidof keyd'
+assert_not_contains "the switching summary no longer advertises Super+<n>" \
+  "$REPO_ROOT/src/host.sh" 'printf "%s\(Super\+%s'
+
 # --- 1. real keyd must accept EVERY generated binding -----------------------
 # keyd prints "ERROR: line N: <tok> is not a valid key" and then starts anyway,
 # so a text assertion on our own output can never catch a rejected chord — only
