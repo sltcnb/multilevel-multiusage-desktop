@@ -110,8 +110,20 @@ elif grep -qi 'AuthenticAMD' /proc/cpuinfo; then
   CPU_VENDOR="amd"
   KVM_MODULE="kvm_amd"
   NESTED_PARAM="options kvm_amd nested=0"
+elif [ -n "${CPU_VENDOR_OVERRIDE:-}" ]; then
+  # Escape hatch for a host whose /proc/cpuinfo carries no recognisable vendor
+  # string (some firmware, and any nested/emulated environment). Dying here means
+  # NOTHING gets provisioned — no kiosk, no VMs — over a detail the operator can
+  # simply state. CPU_VENDOR_OVERRIDE=intel|amd. Also what lets the test suite
+  # exercise this script at all.
+  case "$CPU_VENDOR_OVERRIDE" in
+    intel) CPU_VENDOR="intel"; KVM_MODULE="kvm_intel"; NESTED_PARAM="options kvm_intel nested=0" ;;
+    amd)   CPU_VENDOR="amd";   KVM_MODULE="kvm_amd";   NESTED_PARAM="options kvm_amd nested=0" ;;
+    *)     die "CPU_VENDOR_OVERRIDE must be 'intel' or 'amd' (got '$CPU_VENDOR_OVERRIDE')." ;;
+  esac
+  warn "CPU vendor not detected in /proc/cpuinfo — using CPU_VENDOR_OVERRIDE=$CPU_VENDOR."
 else
-  die "Unknown CPU vendor; cannot select KVM module."
+  die "Unknown CPU vendor; cannot select KVM module. Set CPU_VENDOR_OVERRIDE=intel|amd if you know which this is."
 fi
 # Sanity: hardware virt flag present?
 grep -Eq '(vmx|svm)' /proc/cpuinfo || \
@@ -136,7 +148,7 @@ mkdir -p "$IMAGES_DIR"
 DISK_FREE_MB="$(df -Pm "$IMAGES_DIR" | awk 'NR==2 {print $4}')"
 set_kv IMAGES_DIR "$IMAGES_DIR"
 set_kv DISK_FREE_MB "$DISK_FREE_MB"
-if [ "$DISK_FREE_MB" -lt "$DISK_LOW_WATERMARK_MB" ]; then
+if [ "$DISK_FREE_MB" -lt "${DISK_LOW_WATERMARK_MB:=40960}" ]; then
   warn "Low disk: ${DISK_FREE_MB}MB free on $IMAGES_DIR (< ${DISK_LOW_WATERMARK_MB}MB)."
 fi
 
@@ -150,8 +162,8 @@ fi
 compute_split() {
   n="$(for_each_enabled_env | wc -l | tr -d ' ')"; [ "$n" -ge 1 ] || n=1
 
-  avail_ram=$(( TOTAL_RAM_MB - HOST_RESERVE_RAM_MB ))
-  avail_cores=$(( TOTAL_CORES - HOST_RESERVE_CORES ))
+  avail_ram=$(( TOTAL_RAM_MB - ${HOST_RESERVE_RAM_MB:=2048} ))
+  avail_cores=$(( TOTAL_CORES - ${HOST_RESERVE_CORES:=1} ))
   [ "$avail_ram" -lt 1024 ]  && { warn "Low RAM after reserve (${avail_ram}MB); clamping."; avail_ram=1024; }
   [ "$avail_cores" -lt 1 ]   && { warn "Few cores after reserve; clamping to 1."; avail_cores=1; }
 
@@ -159,7 +171,7 @@ compute_split() {
   per_cpu=$(( avail_cores / n )); [ "$per_cpu" -ge 1 ]    || per_cpu=1
 
   if [ "${AUTO_DISK:-1}" = "1" ]; then
-    avail_disk_gb=$(( (DISK_FREE_MB - HOST_RESERVE_DISK_MB) / 1024 )); [ "$avail_disk_gb" -lt 1 ] && avail_disk_gb=1
+    avail_disk_gb=$(( (DISK_FREE_MB - ${HOST_RESERVE_DISK_MB:=4096}) / 1024 )); [ "$avail_disk_gb" -lt 1 ] && avail_disk_gb=1
     per_disk=$(( avail_disk_gb / n )); [ "$per_disk" -ge 8 ] || per_disk=8
   else
     per_disk="${FIXED_DISK_GB:-30}"
@@ -168,9 +180,52 @@ compute_split() {
   log "Per-env split across $n enabled env(s): RAM=${per_ram}MB VCPU=${per_cpu} DISK=${per_disk}G"
   # set_kv writes to config.env (persists even from this pipe subshell).
   for_each_enabled_env | while read -r e _; do
-    set_kv "${e}_RAM_MB"  "$per_ram"
-    set_kv "${e}_VCPU"    "$per_cpu"
-    set_kv "${e}_DISK_GB" "$per_disk"
+    _os="$(env_val "$e" OS arch)"
+    _de="$(env_val "$e" DE none)"
+    # PER-ENV FLOORS. An even split is a starting point, not a valid answer: a
+    # Windows guest below its documented minimums fails Setup outright, and a
+    # desktop guest whose disk cannot hold the DE fails the install with "not
+    # enough disk" (de_min_disk_mb wants 7000MB FREE for kde/gnome/mate, which an
+    # 8G disk does not have once the base cloud image is written to it — that is
+    # a guest that boots to a black console forever).
+    _min_ram=1024; _min_cpu=1; _min_disk=8
+    case "$_os" in
+      windows) _min_ram=4096; _min_cpu=2; _min_disk=64 ;;
+    esac
+    if [ -n "$_de" ] && [ "$_de" != "none" ]; then
+      [ "$_min_ram"  -ge 2048 ] || _min_ram=2048
+      [ "$_min_disk" -ge 20 ]   || _min_disk=20
+    fi
+    _ram="$per_ram";   [ "$_ram"  -ge "$_min_ram" ]  || _ram="$_min_ram"
+    _cpu="$per_cpu";   [ "$_cpu"  -ge "$_min_cpu" ]  || _cpu="$_min_cpu"
+    _disk="$per_disk"; [ "$_disk" -ge "$_min_disk" ] || _disk="$_min_disk"
+
+    # NEVER clobber a value that is already set. The operator sets these
+    # deliberately (office_RAM_MB=4096 / office_DISK_GB=64 are Win11 minimums)
+    # and this function used to overwrite them with the even split on every run,
+    # silently undoing the configuration and, for Windows, breaking the install.
+    # An unset key gets the computed value; blank one out to re-derive it.
+    for _k in RAM_MB VCPU DISK_GB; do
+      case "$_k" in
+        RAM_MB)  _v="$_ram";  _min="$_min_ram"  ;;
+        VCPU)    _v="$_cpu";  _min="$_min_cpu"  ;;
+        DISK_GB) _v="$_disk"; _min="$_min_disk" ;;
+      esac
+      _cur="$(env_val "$e" "$_k")"
+      if [ -n "$_cur" ]; then
+        # Respect it. Warn ONLY if it is under the hard FLOOR for this OS/desktop
+        # — being under the even split is perfectly normal (the operator asked for
+        # less than an equal share) and must not produce a scary line.
+        # Only compare when it is actually a number ([ -lt ] errors otherwise).
+        case "$_cur" in
+          ''|*[!0-9]*) ;;
+          *) [ "$_cur" -lt "$_min" ] && warn "$e: ${_k}=$_cur is below the ${_os}${_de:+/$_de} minimum of $_min — keeping your value, but the guest may fail to install." ;;
+        esac
+      else
+        set_kv "${e}_${_k}" "$_v"
+      fi
+    done
+    log "$e: RAM=$(env_val "$e" RAM_MB)MB VCPU=$(env_val "$e" VCPU) DISK=$(env_val "$e" DISK_GB)G (floors: ${_min_ram}MB/${_min_cpu}/${_min_disk}G)"
   done
 }
 compute_split

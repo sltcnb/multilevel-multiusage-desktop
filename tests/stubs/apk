@@ -1,0 +1,6 @@
+#!/bin/sh
+# Test stub: record the call, install nothing. detect-and-install runs `apk add`
+# for the whole host package set; the suite must exercise the surrounding logic
+# (resource split, module selection, config writes) without touching packages.
+echo "apk $*" >> "${STUB_LOG:-/dev/null}"
+exit 0

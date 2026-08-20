@@ -247,4 +247,37 @@ assert_contains "it opens the redirect target the portal supplies" "$KH/portal-l
 assert_eq "re-running does not duplicate the i3 binding" \
   1 "$(grep -c 'portal-login.sh' "$I3")"
 
+echo
+echo "== host/detect-and-install.sh (resource split) =="
+# Previously untested, and it OVERWROTE every per-env resource value on each run —
+# silently undoing office_RAM_MB=4096 / office_DISK_GB=64, which are Windows 11
+# minimums, and handing desktop guests an 8G disk that cannot fit the DE (KDE
+# wants 7000MB FREE, which an 8G disk lacks once the base image is written).
+new_sandbox
+cfg_set office_OS windows
+cfg_set office_RAM_MB 4096
+cfg_set office_DISK_GB 64
+cfg_set office_VCPU 2
+cfg_set development_DE kde
+cfg_set administration_ENABLED 0
+sed -i '/^development_RAM_MB=/d; /^development_VCPU=/d; /^development_DISK_GB=/d' "$SANDBOX/config.env"
+CPU_VENDOR_OVERRIDE=intel "$SANDBOX/src/host.sh" detect-and-install > "$SANDBOX/detect.out" 2>&1
+assert_contains "an unrecognised CPU vendor is survivable via CPU_VENDOR_OVERRIDE" \
+  "$SANDBOX/detect.out" 'CPU_VENDOR_OVERRIDE=intel'
+# Operator-set values must survive: these are the Win11 minimums.
+assert_contains "explicit office_RAM_MB is NOT overwritten by the split" "$SANDBOX/config.env" '^office_RAM_MB="?4096"?$'
+assert_contains "explicit office_DISK_GB is NOT overwritten by the split" "$SANDBOX/config.env" '^office_DISK_GB="?64"?$'
+assert_contains "explicit office_VCPU is NOT overwritten by the split" "$SANDBOX/config.env" '^office_VCPU="?2"?$'
+# Unset values get filled in, at or above the floor for that OS/desktop.
+_dram="$(grep -E '^development_RAM_MB=' "$SANDBOX/config.env" | tr -dc '0-9')"
+_ddisk="$(grep -E '^development_DISK_GB=' "$SANDBOX/config.env" | tr -dc '0-9')"
+if [ "${_dram:-0}" -ge 2048 ]; then _g "an unset RAM value is assigned at/above the desktop floor (${_dram}MB)"; else
+  _b "an unset RAM value is assigned at/above the desktop floor"; printf '        got: [%s]\n' "${_dram:-unset}"
+  printf '        detect-and-install said:\n'; sed 's/^/          /' "$SANDBOX/detect.out" | tail -8; fi
+# 20G floor, not 8G: a KDE/GNOME guest on 8G fails its desktop install for space.
+if [ "${_ddisk:-0}" -ge 20 ]; then _g "a desktop guest gets a disk that can actually hold the DE (${_ddisk}G)"; else
+  _b "a desktop guest gets a disk that can actually hold the DE"; printf '        got: [%s]\n' "${_ddisk:-unset}"; fi
+assert_not_contains "no false 'below the minimum' warning for a valid explicit value" \
+  "$SANDBOX/detect.out" 'office: RAM_MB=4096 is below'
+
 summary
