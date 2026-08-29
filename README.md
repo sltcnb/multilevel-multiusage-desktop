@@ -9,7 +9,7 @@ A locked-down laptop that runs three separate worlds side by side and lets you
 flip between them with a single keystroke.
 
 Under the hood it's a tiny Alpine Linux host whose only job is to run KVM virtual
-machines and show them full-screen. You never touch the host directly — it boots
+machines and show them full-screen. You never touch the host directly. It boots
 straight into the first VM, and `Super+1` / `Super+2` / `Super+3` swap between
 them instantly on the same screen, keyboard and mouse. Each VM is a completely
 separate environment (its own OS, its own network, its own disk), and the whole
@@ -29,7 +29,7 @@ that maps each recommendation to what the appliance actually does.
 The office VM defaults to **Windows 11** so it gets first-class Entra ID join,
 Intune MDM and native Microsoft 365 / Teams / Outlook. Windows needs an install
 ISO you supply (`WINDOWS_ISO`) and installs unattended on a q35 + UEFI + vTPM
-profile — see "Configuration" and "How the automated install of guests works".
+profile, see "Configuration" and "How the automated install of guests works".
 Prefer a lighter, no-license Linux office? Set `office_OS="ubuntu"`
 (`office_DE="gnome"`); Intune there is the limited `intune-portal` client. The
 other two environments can be any supported OS.
@@ -39,12 +39,12 @@ other two environments can be any supported OS.
 The bar across the top is the "trust bar": it's always visible and the highlighted
 workspace number tells you which environment is currently active, so you can never
 confuse one world for another. Below it, the active VM's desktop fills the screen,
-and `Super+1/2/3` swaps which one is shown — instantly, on the same physical
+and `Super+1/2/3` swaps which one is shown, instantly, on the same physical
 display.
 
 ## How the isolation works
 
-Every environment reaches the internet, but none can reach another — and that
+Every environment reaches the internet, but none can reach another, and that
 holds even if one of the safeguards fails. Everything is enforced on the host,
 so a guest has no say in it.
 
@@ -60,35 +60,35 @@ so a guest has no say in it.
   one layer out and the other two still hold the line.
 
 Outbound internet is plain NAT (masquerade out whichever interface has the
-default route). You can tighten any environment to a whitelist — DNS plus a fixed
-list of IPs/CIDRs, everything else dropped — which is handy for the sensitive
+default route). You can tighten any environment to a whitelist. DNS plus a fixed
+list of IPs/CIDRs, everything else dropped, which is handy for the sensitive
 `administration` VM. nftables matches IP addresses, not hostnames, so for
 name-based rules you'd point the whitelist at a filtering proxy.
 
 `src/environments/isolate.sh` builds all of this and then **verifies** it: from
 inside each guest it pings every other subnet (must fail) and the internet (must
 succeed), and it checks on the host that every drop rule is actually live. A
-failed check is a failed run — the script exits non-zero, so a breach can't slip
+failed check is a failed run, the script exits non-zero, so a breach can't slip
 by as a warning in a boot log. Checks that couldn't run yet (guest still
 booting, agent not up) are reported as skipped and don't fail the run, but the
 script tells you isolation is not fully verified until you re-run it.
 
 ## Continuous assurance: the isolation watch
 
-`isolate.sh` proves isolation once, at setup — after that, nothing used to look
+`isolate.sh` proves isolation once, at setup. After that, nothing used to look
 again. A ruleset can be flushed, a libvirt network redefined, a script half
 re-run, and the machine keeps presenting three environments that no longer have
 a fence between them. `src/host/isolation-watch.sh` is the recurring check: every
 minute (busybox crond on the appliance, a systemd timer elsewhere) it asserts
 that every inter-environment DROP rule is still live in the kernel, and
-publishes the verdict to `/run/appliance/isolation.status` — one TAB-separated
+publishes the verdict to `/run/appliance/isolation.status`, one TAB-separated
 line, `STATE EPOCH DETAIL`, with STATE one of `OK`, `FAIL`, `UNKNOWN`.
 
 The contract is deliberately pessimistic. The file lives on a tmpfs, so it is
 gone after a reboot: the answer is UNKNOWN until the first check of the new
 boot, never a stale OK inherited from the previous one. A missing or unparsable
 file also means UNKNOWN, and readers must never crash on it. Anything that wants
-to show "is it still isolated?" reads this file — the trust bar lights up when
+to show "is it still isolated?" reads this file, the trust bar lights up when
 the verdict is FAIL or UNKNOWN (it stays quiet while everything is OK). Running
 it by hand
 (`src/host/isolation-watch.sh --once`) exits 0/1/2 for OK/FAIL/UNKNOWN.
@@ -96,8 +96,8 @@ it by hand
 The watch is installed automatically by `src/environments/isolate.sh`.
 `ISOLATION_WATCH=0` disables it; `ISOLATION_WATCH_INTERVAL` sets the period in
 seconds (cron rounds sub-minute values up to a whole minute). Only state
-**transitions** are written to the audit log, so the one line that matters —
-isolation breaking, or coming back — isn't buried under a day of identical OKs.
+**transitions** are written to the audit log, so the one line that matters,
+isolation breaking, or coming back, isn't buried under a day of identical OKs.
 
 ## Audit trail
 
@@ -114,7 +114,7 @@ logins, USB-to-VM routing decisions, and update checks/applications/rollbacks.
 Two properties matter more than the list:
 
 - **It never blocks the action it records.** If the log can't be written, the
-  portal login, USB routing or update still happens — auditing is a witness,
+  portal login, USB routing or update still happens. Auditing is a witness,
   not a gate.
 - **The kiosk user can report events without being able to read the log.**
   Unprivileged events (portal login, the USB chooser) go through a mode-1733
@@ -147,19 +147,19 @@ pinning and the build options. It then writes `config.env` (mode 0600; an
 existing one is backed up first) and offers to run the build for you.
 `./setup-image.sh --defaults` writes a default `config.env` non-interactively.
 You can equally copy `config.env.example` by hand and run
-`./src/build/make-image.sh` yourself — the wizard only automates that.
+`./src/build/make-image.sh` yourself, the wizard only automates that.
 
 You get `out/appliance-alpine.qcow2` (~2 GB) after a few minutes.
 
 If a local `config.env` exists, it is **baked into the image** so the appliance
-boots with your Wi-Fi / per-env / password settings already in place — no editing
+boots with your Wi-Fi / per-env / password settings already in place, no editing
 on the box, and the installer preserves it (hardware-detected values are still
 re-detected on the real machine at first boot). Because `config.env` holds secrets
-(Wi-Fi PSK, passwords), **the resulting image is sensitive — don't distribute it**.
+(Wi-Fi PSK, passwords), **the resulting image is sensitive. Don't distribute it**.
 Skip baking with `BAKE_CONFIG=0 ./src/build/make-image.sh` (the appliance then starts
 from `config.env.example` and you edit it on tty2). The shipped image keeps root
 **locked**; the installed system sets root at first boot from `HOST_ROOT_PASSWORD`
-(required — secrets are never auto-generated).
+(required, secrets are never auto-generated).
 
 ### 2. Flash a USB stick
 
@@ -169,7 +169,7 @@ from `config.env.example` and you edit it on tty2). The shipped image keeps root
 
 `flash-image.sh` does the whole second half in one go: it reuses the qcow2 you
 just built (or rebuilds it with `--build`), converts it to raw, lists the
-external/removable disks, and flashes the one you pick — after you confirm the
+external/removable disks, and flashes the one you pick. After you confirm the
 target by typing its device name a second time. The system disk is refused
 outright, and `--image-only` stops before the flash step.
 
@@ -178,13 +178,13 @@ The manual equivalent (what the script runs under the hood):
 ```sh
 qemu-img convert -O raw out/appliance-alpine.qcow2 out/appliance.raw
 
-diskutil list                       # find your USB, e.g. /dev/disk4 — be certain
+diskutil list                       # find your USB, e.g. /dev/disk4: be certain
 diskutil unmountDisk /dev/diskN
 sudo dd if=out/appliance.raw of=/dev/rdiskN bs=4m status=progress
 diskutil eject /dev/diskN
 ```
 
-Flashing wipes the whole stick — double-check the disk number. The `rdiskN` raw
+Flashing wipes the whole stick, double-check the disk number. The `rdiskN` raw
 node is much faster than `diskN`.
 
 ### 3. Set up firmware on the target
@@ -192,7 +192,7 @@ node is much faster than `diskN`.
 Before booting:
 
 - Enable hardware virtualization (Intel VT-x / AMD SVM).
-- Enable the IOMMU (Intel VT-d / AMD-Vi) — you'll want it if you later add GPU
+- Enable the IOMMU (Intel VT-d / AMD-Vi), you'll want it if you later add GPU
   passthrough.
 - Set the machine to boot from USB.
 - Turn Secure Boot **off** for now (the image ships unsigned; you can turn it back
@@ -201,7 +201,7 @@ Before booting:
 The image is built for UEFI, so pick the `UEFI: <your USB>` entry. If the machine
 is legacy-BIOS only, rebuild with `BOOT_MODE=BIOS ./src/build/make-image.sh`.
 
-### 4. Boot the stick — it installs itself
+### 4. Boot the stick. It installs itself
 
 The stick notices it booted from removable media and runs the installer
 automatically: it picks the largest internal disk, shows a 10-second abort
@@ -229,8 +229,8 @@ cd /opt/appliance
 ./setup-machine.sh           # the numbered menu of the remaining steps
 ```
 
-The host base — hardware detection, kiosk user, hardening, i3 switching, Wi-Fi
-and the captive-portal hook — already ran automatically at first boot, so
+The host base, hardware detection, kiosk user, hardening, i3 switching, Wi-Fi
+and the captive-portal hook, already ran automatically at first boot, so
 `setup-machine.sh` only offers what is left: **1) create the VMs** and **2)
 isolate + verify**, plus the day-two operations (guest passwords, VPN, scrubbing
 secrets, secure boot). `./setup-machine.sh <n>` runs step n directly; each step
@@ -250,7 +250,7 @@ Before the first run, it's recommended to pin each base cloud image you'll
 actually use, one of two ways (`config.env.example` explains both in detail):
 pin the vendor's own signature (`UBUNTU_IMG_GPG_FPR` / `ARCH_IMG_GPG_FPR` /
 `DEBIAN_IMG_GPG_FPR`, verified automatically on every run), or pin a SHA256 by
-hand (`*_IMG_SHA256` — this wins when both are set). Pair a hand-pinned hash
+hand (`*_IMG_SHA256`. This wins when both are set). Pair a hand-pinned hash
 with `*_IMG_DATE` (the vendor's dated, immutable directory) or it goes stale on
 the next vendor rebuild. Pinning is optional by default: with neither set, the
 image downloads without an integrity check (with a warning). Set
@@ -263,12 +263,12 @@ Then build and lock down the VMs:
 ./src/environments/isolate.sh    # per-VM networks + firewall + the isolation checks
 ```
 
-`isolate.sh` prints PASS/FAIL for every check — each VM must reach the internet
+`isolate.sh` prints PASS/FAIL for every check, each VM must reach the internet
 and must **not** reach either of the other two.
 
 Each VM's first boot installs its full desktop environment over the network
 (GNOME on the Ubuntu office VM, etc.), which takes several minutes and ends in
-one automatic reboot into the desktop — so the first boot is slow by design.
+one automatic reboot into the desktop, so the first boot is slow by design.
 Watch it with `virsh console <env>` (then in-guest `tail -f /var/log/de-install.log`).
 
 To change a guest's password later without rebuilding, use
@@ -276,7 +276,7 @@ To change a guest's password later without rebuilding, use
 
 Reboot to confirm the full experience: you land on the office VM full-screen and
 `Super+1/2/3` switches between them. `Super+Return` opens a terminal and
-`Super+p` the captive portal — both work even while a VM holds the keyboard.
+`Super+p` the captive portal, both work even while a VM holds the keyboard.
 
 The one ordering rule that matters: **Wi-Fi → portal login → create → isolate.**
 Guests need internet on first boot, which needs the portal cleared, which needs
@@ -284,12 +284,12 @@ the radio up.
 
 ## Day-to-day use
 
-- `Super+1` / `Super+2` / `Super+3` — switch environments. This works even while a
+- `Super+1` / `Super+2` / `Super+3`, switch environments. This works even while a
   VM has grabbed the keyboard, because the hotkey is caught below the display
   server by `keyd`.
-- `Super+p` — re-open the captive portal when the Wi-Fi session times out.
-- `Super+y` — route a plugged YubiKey (or any USB device) to a chosen VM.
-- `Super+Enter` — an unprivileged shell (kiosk user).
+- `Super+p`: re-open the captive portal when the Wi-Fi session times out.
+- `Super+y`: route a plugged YubiKey (or any USB device) to a chosen VM.
+- `Super+Enter`: an unprivileged shell (kiosk user).
 
 Everything else is automatic: autologin, VM autostart, and the firewall all
 persist across reboots.
@@ -298,7 +298,7 @@ persist across reboots.
 
 When you plug in a YubiKey, a small chooser pops up on screen asking which
 environment should get it. The key is then USB-passed-through to **only** that VM
-and detached from any other — it's never shared across environments. A udev rule
+and detached from any other, it's never shared across environments. A udev rule
 triggers the chooser on insert, and `Super+y` re-runs it manually. usbguard is
 told to admit YubiKeys specifically so they aren't blocked by the default USB
 lockdown. See `src/host/usb-to-vm.sh`.
@@ -306,7 +306,7 @@ lockdown. See `src/host/usb-to-vm.sh`.
 ## Configuration
 
 Everything is driven by `config.env` on the appliance (`/opt/appliance/config.env`).
-The committed `config.env.example` is the template — copy it and edit. The real
+The committed `config.env.example` is the template, copy it and edit. The real
 `config.env` is deliberately **not** in git because it holds secrets.
 
 ```sh
@@ -317,27 +317,27 @@ development_ENABLED=1;    development_OS="arch";   development_DE="gnome"
 administration_ENABLED=1; administration_OS="arch"; administration_DE="gnome"
 ```
 
-- **Add or remove environments** — `ENVS` is just an ordered list. You can define
+- **Add or remove environments**: `ENVS` is just an ordered list. You can define
   as many as you like; each one's position fixes its workspace number and subnet,
   so enabling or disabling one never renumbers the others. Disable with
   `<env>_ENABLED=0`.
-- **OS** — `ubuntu`, `arch`, or `debian` (all provisioned identically via
+- **OS**: `ubuntu`, `arch`, or `debian` (all provisioned identically via
   cloud-init), or `windows` for a Windows 11 environment. Windows takes a
   separate path (unattended ISO install on q35 + UEFI + vTPM; no cloud-init) and
-  needs `WINDOWS_ISO` set to a Windows 11 install ISO you supply — the repo
+  needs `WINDOWS_ISO` set to a Windows 11 install ISO you supply, the repo
   cannot download or license Windows. It also wants more resources
   (`<env>_VCPU>=2`, `RAM_MB>=4096`, `DISK_GB>=64`). `virtio-win` and the SPICE
   guest tools are fetched automatically.
-- **Desktop** — `<env>_DE` accepts `gnome`, `xfce4`, `kde`, `mate`, `lxqt`, or
+- **Desktop**: `<env>_DE` accepts `gnome`, `xfce4`, `kde`, `mate`, `lxqt`, or
   `none` for a CLI-only guest.
-- **Egress** — `<env>_EGRESS_MODE=all|whitelist` plus `<env>_EGRESS_ALLOW="ip ip"`.
-- **VPN** — `<env>_VPN=1` with WireGuard details, then run `src/environments/vpn.sh`.
-- **Custom APT source** — point apt-family guests (ubuntu/debian) at your own
+- **Egress**: `<env>_EGRESS_MODE=all|whitelist` plus `<env>_EGRESS_ALLOW="ip ip"`.
+- **VPN**: `<env>_VPN=1` with WireGuard details, then run `src/environments/vpn.sh`.
+- **Custom APT source**: point apt-family guests (ubuntu/debian) at your own
   package source instead of the public archives: `APT_MIRROR` sets a base mirror
   (via cloud-init `apt.primary`) and `APT_PROXY` sets a caching proxy such as
   apt-cacher-ng (applied as the global apt proxy, so it also covers the in-guest
   Microsoft/Wazuh repos). Both empty = default upstream mirrors; Arch guests
-  ignore them. Rerouting where bytes come from doesn't loosen trust — the pinned
+  ignore them. Rerouting where bytes come from doesn't loosen trust, the pinned
   GPG fingerprints still gate what is installed.
 
 RAM, vCPUs and disk are split evenly across the enabled environments, with host
@@ -347,13 +347,13 @@ headroom reserved first.
 
 Every secret must be an explicit value you chose, written in `config.env` (by
 `setup-image.sh` or by hand): `HOST_ROOT_PASSWORD`, `GUEST_PASSWORD`,
-`LUKS_PASS`, and each `<env>_DISK_PASS`. Secrets are **never auto-generated** —
+`LUKS_PASS`, and each `<env>_DISK_PASS`. Secrets are **never auto-generated**,
 a password you did not choose is a password you cannot know, and a generated
 root or LUKS password locks you out of your own machine. An empty secret is a
 hard error at provisioning, not a random value. Once everything is set up,
 `src/environments/scrub-secrets.sh` blanks them back out of `config.env`.
 
-Don't bake secrets into a shipped image — set them on the appliance instead.
+Don't bake secrets into a shipped image, set them on the appliance instead.
 
 ## Enterprise integrations
 
@@ -373,10 +373,10 @@ Don't bake secrets into a shipped image — set them on the appliance instead.
 
 ## Users and privileges
 
-- **`kiosk`** — the autologin desktop user. Unprivileged: it can view and launch
+- **`kiosk`**: the autologin desktop user. Unprivileged: it can view and launch
   the VMs (member of `libvirt`/`kvm`) but has no sudo and no root powers. This is
   what you use day to day. A compromise here can't reach the host.
-- **`root`** — administration only, on tty2 (`Ctrl+Alt+F2`). All the provisioning
+- **`root`**: administration only, on tty2 (`Ctrl+Alt+F2`). All the provisioning
   scripts need it. There's deliberately no sudo on the host, keeping the trusted
   computing base small.
 
@@ -390,7 +390,7 @@ setup-machine.sh          on the appliance: menu of the remaining steps (create 
 src/lib/common.sh             shared helpers: logging, guards, config, the environment model, the audit log
 src/lib/guestdisk.sh          mount a shut-off guest's disk from the host (qemu-nbd); offline password/account repair
 src/lib/de-install.sh         one definition of the guest desktop installer, shared by create.sh and guest-doctor.sh
-src/lib/windows-unattend.sh   Windows 11 answer-file (autounattend.xml) generator — the Windows counterpart to de-install.sh
+src/lib/windows-unattend.sh   Windows 11 answer-file (autounattend.xml) generator, the Windows counterpart to de-install.sh
 src/build/make-image.sh       build the bootable Alpine image (runs in Docker)
 src/installer/install-to-disk.sh  clone the image onto the internal disk, optional LUKS
 src/host/
@@ -411,7 +411,7 @@ src/environments/
   isolate.sh              per-VM networks + all-pairs firewall drop + verification
   vpn.sh                  optional per-VM non-bypassable WireGuard tunnel
   set-guest-password.sh   change a running guest's password via the guest agent
-  guest-doctor.sh         inspect/repair a shut-off guest from the host — no password, no guest agent
+  guest-doctor.sh         inspect/repair a shut-off guest from the host, no password, no guest agent
   scrub-secrets.sh        wipe secrets from config.env after setup
 ```
 
@@ -420,7 +420,7 @@ its dependencies, and is safe to re-run.
 
 ## How the automated install of guests works
 
-Ubuntu, Arch and Debian all publish official **cloud images** — qcow2 files that
+Ubuntu, Arch and Debian all publish official **cloud images**. Qcow2 files that
 already contain cloud-init. The appliance boots one of these, hands it a small
 NoCloud seed ISO with the user and package configuration, and cloud-init
 provisions the guest unattended on first boot. Every guest OS goes through the
@@ -431,7 +431,7 @@ possible but brittle, so the cloud image is the better choice there too.)
 The guest's login does **not** depend on that going well. `create.sh` writes the
 password hash into the new disk before the VM has ever booted, in addition to
 handing it to cloud-init. This is deliberate redundancy: everything else the
-seed carries — the account, the desktop, the guest agent — only happens if
+seed carries, the account, the desktop, the guest agent, only happens if
 cloud-init runs, so a datasource it declines to read used to lock the operator
 out of all three environments at once, with no way in and no way to find out
 why.
@@ -440,8 +440,8 @@ why.
 so a `windows` environment installs from the ISO you supply (`WINDOWS_ISO`),
 driven by an `autounattend.xml` the appliance generates
 (`src/lib/windows-unattend.sh`) and hands to Windows Setup on a tiny CD. It runs
-on the profile Windows 11 requires — **q35 + UEFI + a software TPM (swtpm) +
-Secure Boot capability** — which is a different machine/firmware than the SeaBIOS
+on the profile Windows 11 requires, **q35 + UEFI + a software TPM (swtpm) +
+Secure Boot capability**, which is a different machine/firmware than the SeaBIOS
 Linux guests use. For a hands-off first install the target disk is presented as
 SATA and the NIC as `e1000e` (both have inbox Windows drivers, so Setup needs no
 driver injection), and `virtio-win` (drivers + `qemu-guest-agent`) plus the SPICE
@@ -455,12 +455,12 @@ resilience (password/network pre-seed, `guest-doctor`) applies to a Windows gues
 `src/environments/guest-doctor.sh` is the tool for "I can't log in" and "there's
 no desktop". It goes in through the **host**: `qemu-nbd` attaches the guest's
 qcow2 and the guest's filesystem becomes ordinary files. It therefore needs no
-password, no SSH and no qemu-guest-agent — which matters, because the agent is
+password, no SSH and no qemu-guest-agent, which matters, because the agent is
 itself installed by cloud-init, so the failure that hurts most also takes out
 every other repair path. `set-guest-password.sh` remains the quick route for a
 *healthy, running* guest; this is the one for a broken one.
 
-The VM must be shut off (`virsh shutdown <env>`) — mounting a disk a live qemu
+The VM must be shut off (`virsh shutdown <env>`), mounting a disk a live qemu
 also has open corrupts it, so every mode refuses to run against a running
 domain.
 
@@ -474,11 +474,11 @@ The report answers the questions you cannot answer from a console login prompt:
 
 | Line | What it means |
 |------|---------------|
-| `cloud-init seed: NOT ATTACHED` | the guest never had a seed to read — nothing in it applied |
+| `cloud-init seed: NOT ATTACHED` | the guest never had a seed to read, nothing in it applied |
 | `cloud-init ran as: NEVER RAN` | cloud-init never started; the account and desktop were never created |
 | `datasource: none recorded` | cloud-init ran but did not consume our seed |
-| `user 'operator': LOCKED` | the account exists with no usable password — indistinguishable from "wrong password" at a console |
-| `desktop install: ABORTED — guest disk too small` | apt ran out of room; raise `<env>_DISK_GB` and `RECREATE=<env>` |
+| `user 'operator': LOCKED` | the account exists with no usable password, indistinguishable from "wrong password" at a console |
+| `desktop install: ABORTED, guest disk too small` | apt ran out of room; raise `<env>_DISK_GB` and `RECREATE=<env>` |
 | `desktop install: never armed` | the installer never reached the image (cloud-init did not run) |
 
 ## Per-environment VPN
@@ -500,12 +500,12 @@ WireGuard peer.
 ## Updating a deployed appliance
 
 Without an updater, shipping a fix to a machine in the field means rebuilding
-the image, reflashing a stick, wiping the internal disk and losing every VM —
+the image, reflashing a stick, wiping the internal disk and losing every VM,
 which in practice means the fix never lands. `src/host/update.sh` replaces the
 `/opt/appliance` code tree in place and nothing else: `config.env`, the
 installer/first-boot markers, VM storage and the libvirt domain definitions are
 machine state and are carried across untouched. The new tree is downloaded,
-signature-verified and syntax-checked, then swapped in atomically (a rename —
+signature-verified and syntax-checked, then swapped in atomically (a rename,
 never a partial copy over the live tree), and previous trees are kept so a bad
 update can be undone:
 
@@ -568,8 +568,8 @@ shellcheck -x -S warning setup-image.sh setup-machine.sh flash-image.sh src/lib/
 
 ### Tests
 
-`./tests/run.sh` runs the suite inside a privileged Alpine container — the same
-distro the appliance is built on — because the scripts under test really do
+`./tests/run.sh` runs the suite inside a privileged Alpine container, the same
+distro the appliance is built on, because the scripts under test really do
 configure a host: they load nftables rules, write to `/etc`, and create users.
 The container makes that safe and disposable, and means the assertions are about
 real behaviour rather than a mock:
@@ -606,7 +606,7 @@ IN_CONTAINER=1 ./tests/run.sh    # already on a suitable Linux host, as root
 ## Security
 
 Isolation between environments is the core guarantee of this project. Secrets live
-only in the git-ignored `config.env` or on the appliance — never in the repository
+only in the git-ignored `config.env` or on the appliance, never in the repository
 or a shipped image.
 
 Supply-chain integrity:
@@ -614,7 +614,7 @@ Supply-chain integrity:
 - **Base cloud images.** Pinning is optional but strict once set, and comes in
   two forms: pin the vendor's own signature (`<OS>_IMG_GPG_FPR`, verified on
   every run against exactly that key), or pin a build by hand
-  (`<OS>_IMG_SHA256` — this wins when both are set). With neither, the image
+  (`<OS>_IMG_SHA256`. This wins when both are set). With neither, the image
   downloads unverified and prints a warning; a failed verification deletes the
   file and aborts. Pair a hand-pinned hash with `<OS>_IMG_DATE` (the vendor's
   dated, immutable directory) or it goes stale on the next vendor rebuild.
@@ -633,7 +633,7 @@ Supply-chain integrity:
 passwordless kiosk console account over SSH, regardless of the
 `HARDEN_INPUT`/`HOST_SSH` firewall settings.
 
-`config.env` is kept at mode `0600` — it holds the guest and root passwords, the
+`config.env` is kept at mode `0600`. It holds the guest and root passwords, the
 Wi-Fi PSK and the LUKS/WireGuard keys, and the kiosk desktop user must never be
 able to read it. Every write goes back through that mode, and a root-run script
 tightens the file if it finds it loose.
